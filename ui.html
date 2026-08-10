@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>
+    html, body { margin: 0; padding: 0; height: auto; min-height: 0; }
+    input[type="checkbox"] { color-scheme: dark light; }
+    body {
+      display: block; font-family: Inter, system-ui, -apple-system, sans-serif;
+      font-size: 12px; color: var(--figma-color-text, #333);
+      background: var(--figma-color-bg, #fff);
+    }
+    #root { height: auto; display: flex; flex-direction: column; }
+    * { box-sizing: border-box; }
+
+    /* Скроллбары — под фон плагина, а не белые по умолчанию */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--figma-color-border, #ccc); border-radius: 5px;
+      border: 2px solid transparent; background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--figma-color-text-tertiary, #999); background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-corner { background: transparent; }
+
+    /* ——— шапка ——— */
+    .head { padding: 12px 16px 0; }
+    .head-title {
+      display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600;
+      color: var(--figma-color-text, #333); margin-bottom: 8px;
+    }
+    .info-wrap { position: relative; display: inline-flex; align-items: center; }
+    .info-icon { display: block; cursor: help; color: var(--figma-color-text-secondary, #888); }
+    .info-wrap:hover .info-icon, .info-wrap.pinned .info-icon { color: var(--figma-color-text, #333); }
+    .info-tip {
+      position: absolute; top: calc(100% + 7px); left: -8px; width: 250px; padding: 8px 10px;
+      background: var(--figma-color-bg, #fff); border: 0.5px solid var(--figma-color-border, #ccc);
+      border-radius: 6px; font-size: 11px; font-weight: 400; line-height: 1.5;
+      color: var(--figma-color-text-secondary, #888);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.32), 0 2px 6px rgba(0,0,0,0.18);
+      display: none; z-index: 10;
+    }
+    .info-tip strong { color: var(--figma-color-text, #333); font-weight: 600; }
+    .info-wrap:hover .info-tip, .info-wrap.pinned .info-tip { display: block; }
+    .info-tip::before {
+      content: ''; position: absolute; top: -5px; left: 13px; width: 8px; height: 8px;
+      background: var(--figma-color-bg, #fff);
+      border-left: 0.5px solid var(--figma-color-border, #ccc);
+      border-top: 0.5px solid var(--figma-color-border, #ccc);
+      transform: rotate(45deg);
+    }
+
+    /* ——— сегменты ——— */
+    .segmented {
+      display: flex; border: 1px solid var(--figma-color-border, #ccc); border-radius: 6px;
+      overflow: hidden; background: var(--figma-color-bg-secondary, #f5f5f5); margin-bottom: 10px;
+    }
+    .seg-btn {
+      flex: 1; height: 28px; border: none; background: transparent;
+      color: var(--figma-color-text-secondary, #888); font-size: 12px; font-family: inherit;
+      cursor: pointer; padding: 0 8px; white-space: nowrap; outline: none;
+      -webkit-appearance: none; -webkit-tap-highlight-color: transparent;
+    }
+    .seg-btn:not(:last-child) { border-right: 1px solid var(--figma-color-border, #ccc); }
+    .seg-btn:hover:not(.active) {
+      background: var(--figma-color-bg-hover, rgba(255,255,255,0.06)); color: var(--figma-color-text, #333);
+    }
+    .seg-btn.active {
+      background: var(--figma-color-bg, #fff); color: var(--figma-color-text, #333);
+      font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }
+
+    .opt {
+      display: flex; align-items: center; gap: 6px; margin: -2px 0 10px; font-size: 11px;
+      color: var(--figma-color-text-secondary, #888); cursor: pointer; user-select: none;
+    }
+    .opt:hover { color: var(--figma-color-text, #333); }
+    .opt input { margin: 0; cursor: pointer; flex-shrink: 0; }
+
+    /* ——— раскрывающиеся блоки шапки (страницы, правила) ——— */
+    .disc { padding: 0 16px 10px; }
+    .disc-toggle {
+      display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none;
+      font-size: 11px; color: var(--figma-color-text-secondary, #888); padding: 3px 0;
+    }
+    .disc-toggle:hover { color: var(--figma-color-text, #333); }
+    .disc-chev {
+      width: 6px; height: 6px; border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor; transform: rotate(-45deg);
+      transition: transform 0.15s; flex-shrink: 0;
+    }
+    .disc-chev.open { transform: rotate(45deg); }
+    .disc-body {
+      display: none; max-height: 190px; overflow-y: auto;
+      border: 1px solid var(--figma-color-border, #e5e5e5); border-radius: 4px; margin-top: 4px;
+    }
+    .row-check { display: flex; align-items: flex-start; gap: 6px; padding: 5px 8px; font-size: 11px; cursor: pointer; }
+    .row-check:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
+    .row-check input { margin: 2px 0 0; cursor: pointer; flex-shrink: 0; }
+    .row-check .rc-text { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row-check.sub { padding-left: 24px; }
+    .row-check .rc-sub {
+      display: block; color: var(--figma-color-text-secondary, #888); font-size: 10px;
+      white-space: normal; margin-top: 1px; line-height: 1.35;
+    }
+
+    /* ——— состояния ——— */
+    .empty { padding: 12px 16px; color: var(--figma-color-text-secondary, #888); }
+    .onboard-body { font-size: 12px; line-height: 1.5; color: var(--figma-color-text-secondary, #888); }
+
+    .progress { padding: 24px 16px; text-align: center; color: var(--figma-color-text-secondary, #888); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .spinner {
+      width: 24px; height: 24px; border: 2.5px solid var(--figma-color-border, #ddd);
+      border-top-color: var(--figma-color-text, #333); border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-text { line-height: 1.45; white-space: pre-line; }
+
+    /* ——— сводка ——— */
+    /* Две колонки: слева счётчики, справа кнопки. Счётчики переносятся на вторую
+       строку внутри своей колонки, кнопки остаются справа по верхнему краю —
+       горизонтальной прокрутки в сводке быть не должно. */
+    .summary {
+      display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; font-size: 11px;
+      color: var(--figma-color-text-secondary, #888); border-bottom: 1px solid var(--figma-color-border, #e5e5e5);
+    }
+    .sum-items {
+      flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; gap: 3px 12px; padding-top: 2px;
+    }
+    .sum-item { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .sum-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    /* Цветом помечаем только реальные находки. «Не проверено» — не работа,
+       а сообщение «сюда посмотреть не смог», поэтому точки у него нет вовсе. */
+    .dot-blocked { background: #B3261E; }
+    .sum-actions { display: flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
+    .pill {
+      font-size: 10px; color: var(--figma-color-text-secondary, #888); cursor: pointer; white-space: nowrap;
+      border: 1px solid var(--figma-color-border, #ddd); border-radius: 10px; padding: 2px 8px;
+      background: transparent; font-family: inherit; line-height: 1.4; outline: none;
+    }
+    .pill:hover { color: var(--figma-color-text, #333); border-color: var(--figma-color-text-secondary, #999); }
+    .pill.active {
+      color: var(--figma-color-bg, #fff); background: var(--figma-color-text, #333);
+      border-color: var(--figma-color-text, #333); font-weight: 600;
+    }
+    @media (prefers-color-scheme: dark) {
+      .pill.active { color: var(--figma-color-bg, #1e1e1e); background: var(--figma-color-text, #e5e5e5); border-color: var(--figma-color-text, #e5e5e5); }
+    }
+
+    /* ——— предупреждения после правки ——— */
+    .alerts { border-bottom: 1px solid var(--figma-color-border, #e5e5e5); }
+    .alerts-close {
+      position: absolute; top: 6px; right: 8px; width: 16px; height: 16px; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+      border: none; border-radius: 4px; background: transparent; cursor: pointer;
+      color: var(--figma-color-text-secondary, #888); outline: none;
+    }
+    .alerts-close:hover { background: var(--figma-color-bg-hover, #f5f5f5); color: var(--figma-color-text, #333); }
+    .alert {
+      position: relative;
+      display: flex; gap: 8px; align-items: flex-start; padding: 8px 26px 8px 12px; font-size: 11px; line-height: 1.45;
+      background: var(--figma-color-bg-warning-tertiary, rgba(255,199,0,0.12));
+    }
+    .alert.bad { background: var(--figma-color-bg-danger-tertiary, rgba(242,72,34,0.1)); }
+    .alert.ok { background: var(--figma-color-bg-success-tertiary, rgba(20,153,53,0.12)); }
+    .alert.ok .alert-ic { color: var(--figma-color-text-success, #1E7E34); }
+    .alert-ic { flex-shrink: 0; width: 14px; height: 14px; margin-top: 1px; color: var(--figma-color-text-warning, #B25E00); }
+    .alert.bad .alert-ic { color: var(--figma-color-text-danger, #D93025); }
+    .alert-body { flex: 1; }
+    .alert-body strong { font-weight: 600; color: var(--figma-color-text, #333); }
+    .alert-line { display: flex; gap: 6px; align-items: baseline; margin-top: 3px; color: var(--figma-color-text-secondary, #888); }
+    .alert-line .al-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .alert-line .al-act { color: var(--figma-color-text-brand, #0d99ff); cursor: pointer; white-space: nowrap; }
+    .alert-line .al-act:hover { text-decoration: underline; }
+
+    /* ——— результаты ——— */
+    .results { max-height: 460px; overflow-y: auto; }
+    .group { border-bottom: 1px solid var(--figma-color-border, #e5e5e5); }
+    .g-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; cursor: pointer; user-select: none; }
+    .g-head:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
+    .chev {
+      width: 8px; height: 8px; border-right: 1.5px solid var(--figma-color-text-secondary, #888);
+      border-bottom: 1.5px solid var(--figma-color-text-secondary, #888); transform: rotate(-45deg);
+      transition: transform 0.15s; flex-shrink: 0;
+    }
+    .chev.open { transform: rotate(45deg); }
+    .g-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--figma-color-text, #333); font-weight: 600; }
+    .g-count { color: var(--figma-color-text-secondary, #888); font-size: 11px; flex-shrink: 0; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 3px; font-size: 10px; padding: 1px 6px;
+      border-radius: 3px; flex-shrink: 0; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.3px; cursor: help;
+    }
+    .badge .b-ic { width: 10px; height: 10px; flex-shrink: 0; }
+    .badge-blocked { background: #FFE9E7; color: #B3261E; }
+    .badge-unchecked { background: #EEEEEE; color: #616161; }
+    @media (prefers-color-scheme: dark) {
+      .badge-blocked { background: #3B1D1A; color: #F2B8B5; }
+      .badge-unchecked { background: #2E2E2E; color: #BDBDBD; }
+    }
+    .g-fix {
+      flex-shrink: 0; font-size: 10px; font-family: inherit; line-height: 1.4; cursor: pointer;
+      border: 1px solid var(--figma-color-border, #ddd); border-radius: 10px; padding: 2px 8px;
+      background: transparent; color: var(--figma-color-text-secondary, #888); outline: none;
+    }
+    .g-fix:hover { color: var(--figma-color-text, #333); border-color: var(--figma-color-text-secondary, #999); }
+
+
+    .rows { display: none; }
+    /* position нужен кнопке «Исправить»: она лежит поверх строки, а не в потоке.
+       min-height держит одинаковую высоту всех строк, с кнопкой и без неё. */
+    .row {
+      position: relative;
+      display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 26px;
+      min-height: 26px; cursor: pointer; color: var(--figma-color-text, #333);
+    }
+    .row:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
+    .row.active, .row.active:hover {
+      background: var(--figma-color-bg-selected, rgba(13,153,255,0.18));
+      border-left: 3px solid var(--figma-color-border-selected, #0d99ff); padding-left: 23px;
+    }
+    .sn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+    .sn-l, .sn-r { color: var(--figma-color-text, #333); }
+    .chip {
+      display: inline-block; padding: 0 3px; margin: 0 1px; border-radius: 3px;
+      background: var(--figma-color-bg-warning-tertiary, rgba(255,199,0,0.35));
+      color: var(--figma-color-text, #333); font-weight: 600;
+    }
+    .chip.del { background: var(--figma-color-bg-danger-tertiary, rgba(242,72,34,0.22)); }
+    .chip.ins { background: var(--figma-color-bg-success-tertiary, rgba(20,153,53,0.18)); }
+    .row.blocked .row-meta { max-width: 210px; }
+    .row-meta { flex-shrink: 0; color: var(--figma-color-text-secondary, #888); font-size: 11px; max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Кнопка вне потока: место под неё не резервируется, поэтому сниппет всегда занимает
+       всю ширину строки. На поток абсолютный элемент не влияет, значит и дёрганья нет.
+       Плашка сплошная и того же цвета, что главная кнопка: она сама закрывает текст под
+       собой, поэтому подложка-тень не нужна, и вид одинаковый на любом фоне строки —
+       обычном, под курсором и на выделенной. */
+    .row-fix {
+      position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+      display: none; font-size: 10px; font-family: inherit; cursor: pointer;
+      border: none; border-radius: 10px; padding: 2px 8px; outline: none;
+      background: var(--figma-color-bg-brand, #0d99ff); color: #fff;
+    }
+    .row:hover .row-fix { display: inline-block; }
+    .row-fix:hover { background: var(--figma-color-bg-brand-hover, #0b87e5); color: #fff; }
+    .row-fix:active { background: var(--figma-color-bg-brand-pressed, #0a76c9); }
+    .page-head {
+      padding: 6px 12px; font-size: 11px; font-weight: 600; color: var(--figma-color-text, #333);
+      background: var(--figma-color-bg-secondary, #f5f5f5);
+      border-bottom: 1px solid var(--figma-color-border, #e5e5e5); position: sticky; top: 0; z-index: 1;
+    }
+
+    /* ——— подвал ——— */
+    .footer {
+      display: flex; align-items: center; justify-content: flex-end; padding: 8px 16px; gap: 10px;
+      border-top: 1px solid var(--figma-color-border, #e5e5e5); background: var(--figma-color-bg, #fff);
+    }
+    .f-label { flex: 1; min-width: 0; font-size: 11px; color: var(--figma-color-text-secondary, #888); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .btn {
+      height: 32px; padding: 0 16px; border: none; border-radius: 6px; font-size: 12px;
+      font-weight: 600; font-family: inherit; cursor: pointer; white-space: nowrap;
+      background: var(--figma-color-bg-brand, #0d99ff); color: #fff;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    .btn.ghost {
+      background: var(--figma-color-bg, #fff); color: var(--figma-color-text, #333);
+      border: 1px solid var(--figma-color-border, #ccc);
+    }
+    .btn.ghost:hover { background: var(--figma-color-bg-hover, #f5f5f5); opacity: 1; }
+
+    .tip {
+      position: fixed; display: none; max-width: 260px; padding: 8px 10px;
+      background: var(--figma-color-bg, #fff); border: 0.5px solid var(--figma-color-border, #ccc);
+      border-radius: 6px; font-size: 11px; line-height: 1.5; color: var(--figma-color-text-secondary, #888);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.32), 0 2px 6px rgba(0,0,0,0.18); z-index: 100; pointer-events: none;
+    }
+    .tip strong { color: var(--figma-color-text, #333); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="head">
+      <div class="head-title">
+        <span>Где искать</span>
+        <span class="info-wrap" id="scope-info">
+          <svg class="info-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.2"/>
+            <circle cx="8" cy="5" r="0.9" fill="currentColor"/>
+            <path d="M8 7.3v4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+          <span class="info-tip">Проверка целой страницы или файла на больших файлах идёт долго. Быстрее выделить фрейм или секцию и проверить <strong>Выделение</strong>. Скрытые слои по умолчанию не проверяются: у невидимого текста нет переносов.</span>
+        </span>
+      </div>
+      <div class="segmented" id="scope">
+        <button class="seg-btn" data-value="selection">Выделение</button>
+        <button class="seg-btn active" data-value="page">Страница</button>
+        <button class="seg-btn" data-value="file">Файл</button>
+      </div>
+      <label class="opt">
+        <input type="checkbox" id="cb-hidden">
+        <span>Показывать скрытые слои</span>
+      </label>
+    </div>
+
+    <div class="disc" id="pf" style="display:none;">
+      <div class="disc-toggle" id="pf-toggle"><span class="disc-chev" id="pf-chev"></span><span id="pf-label">Все страницы</span></div>
+      <div class="disc-body" id="pf-body"></div>
+    </div>
+
+    <div class="disc">
+      <div class="disc-toggle" id="rl-toggle"><span class="disc-chev" id="rl-chev"></span><span id="rl-label">Правила</span></div>
+      <div class="disc-body" id="rl-body"></div>
+    </div>
+
+    <div class="content">
+      <div class="empty" id="state-idle">
+        <div class="onboard-body">Находит висячие предлоги и склеивает их неразрывным пробелом.</div>
+      </div>
+
+      <div class="progress" id="state-progress" style="display:none;">
+        <div class="spinner"></div>
+        <div class="progress-text" id="progress-text">Проверяю…</div>
+      </div>
+
+      <div class="empty" id="state-msg" style="display:none;"></div>
+
+      <div id="alerts" class="alerts" style="display:none;"></div>
+      <div class="summary" id="summary" style="display:none;"></div>
+      <div class="results" id="results"></div>
+    </div>
+
+    <div class="footer">
+      <span class="f-label" id="f-label"></span>
+      <button class="btn ghost" id="btn-rescan" style="display:none;">Проверить снова</button>
+      <button class="btn" id="btn-main">Проверить</button>
+    </div>
+
+    <div class="tip" id="tip"></div>
+  </div>
+
+  <script>
+  (function () {
+    'use strict';
+    var NBSP = ' ';
+
+    /* ——— справочник правил: подписи и объяснения ——— */
+    var RULES = [
+      { id: 'hang', label: 'Висячие предлоги и союзы', short: 'Висячие предлоги',
+        sub: 'Служебные слова 1–3 букв: «в», «по», «из», «не», «и».' },
+      { id: 'hangLong', label: 'Длинные предлоги и союзы', short: 'Длинные предлоги', isSub: true,
+        sub: 'От 4 букв: «около», «через», «чтобы», «после».' },
+      { id: 'dash', label: 'Пробел перед тире', short: 'Пробел перед тире',
+        sub: 'Чтобы тире не уезжало на новую строку.' },
+      { id: 'num', label: 'Число и единица, валюта, №', short: 'Число и единица',
+        sub: '«3 дня», «5 ₸», «№ 124», разряды тысяч.' },
+      { id: 'space', label: 'Двойные и лишние пробелы', short: 'Лишние пробелы',
+        sub: 'Повторные пробелы, пробелы по краям строк.' }
+    ];
+    var RULE_BY_ID = {};
+    RULES.forEach(function (r) { RULE_BY_ID[r.id] = r; });
+    // Служебная категория, а не правило: в списке правил её нет, выключать нечего.
+    // Причина стоит в названии группы, поэтому в строке её повторять не нужно.
+    RULE_BY_ID.nofont = { id: 'nofont', label: 'Нет нужного шрифта', short: 'Нет шрифта' };
+    RULE_BY_ID.hidden = { id: 'hidden', label: 'Скрытые слои', short: 'Скрытые слои' };
+
+    var BADGE = {
+      blocked: { label: 'Нельзя', tip: 'Текст задан переменной. Плагин это не исправит — правьте переменную в панели Variables.',
+        ic: '<svg class="b-ic" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.2"/><path d="M6 18L18 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>' },
+      unchecked: { label: 'Не проверено', tip: 'Проверить не удалось, поэтому находки внутри не показываю.',
+        ic: '<svg class="b-ic" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.2"/><path d="M12 7.5v5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="16.6" r="1.2" fill="currentColor"/></svg>' }
+    };
+
+    /* ——— состояние ——— */
+    var st = {
+      scope: 'page',
+      selCount: 0, selName: '', selIds: {},
+      pages: [], excluded: {}, scanHidden: false,
+      rules: { hang: true, hangLong: true, dash: true, num: true, space: true },
+      rulesDirty: false,
+      groups: null, counts: { fix: 0, blocked: 0, unchecked: 0 },
+      expanded: {},
+      byPage: false,
+      phase: 'idle',            // idle | scanning | fixing | results
+      lastClicked: null,
+      alerts: null,
+      scanned: 0
+    };
+    var el = function (id) { return document.getElementById(id); };
+    var esc = function (s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    };
+    function plural(n, one, few, many) {
+      var m10 = n % 10, m100 = n % 100;
+      if (m10 === 1 && m100 !== 11) return one;
+      if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+      return many;
+    }
+    function num(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, NBSP); }
+
+    function send(msg) {
+      parent.postMessage({ pluginMessage: msg }, '*');
+    }
+
+    /* ——— высота окна по контенту ——— */
+    var lastH = 0;
+    function reportHeight() {
+      var r = el('root'); if (!r) return;
+      var h = Math.ceil(r.getBoundingClientRect().height);
+      if (h > 0 && h !== lastH) { lastH = h; send({ type: 'resize', height: h }); }
+    }
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(function () { requestAnimationFrame(reportHeight); }).observe(el('root'));
+    }
+
+    /* ——— правила ——— */
+    function renderRules() {
+      var body = el('rl-body');
+      body.innerHTML = '';
+      RULES.forEach(function (r) {
+        var row = document.createElement('div');
+        row.className = 'row-check' + (r.isSub ? ' sub' : '');
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!st.rules[r.id];
+        var txt = document.createElement('span');
+        txt.className = 'rc-text';
+        txt.innerHTML = esc(r.label) + '<span class="rc-sub">' + esc(r.sub) + '</span>';
+        cb.addEventListener('change', function () {
+          st.rules[r.id] = this.checked;
+          if (st.groups) st.rulesDirty = true;
+          updateRulesLabel(); updateFooter(); renderResults();
+        });
+        row.addEventListener('click', function (e) {
+          if (e.target !== cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); }
+        });
+        row.appendChild(cb); row.appendChild(txt);
+        body.appendChild(row);
+      });
+      updateRulesLabel();
+    }
+    function activeRules() { return RULES.filter(function (r) { return st.rules[r.id]; }); }
+    function updateRulesLabel() {
+      var on = activeRules().length;
+      el('rl-label').textContent = on === RULES.length
+        ? 'Правила: все ' + RULES.length
+        : 'Правила: ' + on + ' из ' + RULES.length;
+    }
+
+    /* ——— фильтр страниц ——— */
+    function renderPages() {
+      var body = el('pf-body');
+      body.innerHTML = '';
+      var allOn = Object.keys(st.excluded).length === 0;
+
+      var head = document.createElement('div');
+      head.className = 'row-check';
+      head.style.borderBottom = '1px solid var(--figma-color-border, #e5e5e5)';
+      var allCb = document.createElement('input');
+      allCb.type = 'checkbox'; allCb.checked = allOn;
+      allCb.indeterminate = !allOn && Object.keys(st.excluded).length < st.pages.length;
+      var allTx = document.createElement('span');
+      allTx.className = 'rc-text'; allTx.textContent = 'Все страницы'; allTx.style.fontWeight = '600';
+      allCb.addEventListener('change', function () {
+        st.excluded = {};
+        if (!this.checked) st.pages.forEach(function (p) { st.excluded[p.id] = true; });
+        renderPages(); updatePagesLabel(); updateFooter(); requestAnimationFrame(reportHeight);
+      });
+      head.addEventListener('click', function (e) {
+        if (e.target !== allCb) { allCb.checked = !allCb.checked; allCb.dispatchEvent(new Event('change')); }
+      });
+      head.appendChild(allCb); head.appendChild(allTx);
+      body.appendChild(head);
+
+      st.pages.forEach(function (p) {
+        var row = document.createElement('div');
+        row.className = 'row-check';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = !st.excluded[p.id];
+        var tx = document.createElement('span');
+        tx.className = 'rc-text'; tx.textContent = p.name; tx.title = p.name;
+        cb.addEventListener('change', function () {
+          if (this.checked) delete st.excluded[p.id]; else st.excluded[p.id] = true;
+          updatePagesLabel(); updateFooter();
+          allCb.checked = Object.keys(st.excluded).length === 0;
+          allCb.indeterminate = !allCb.checked && Object.keys(st.excluded).length < st.pages.length;
+        });
+        row.addEventListener('click', function (e) {
+          if (e.target !== cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); }
+        });
+        row.appendChild(cb); row.appendChild(tx);
+        body.appendChild(row);
+      });
+      updatePagesLabel();
+    }
+    function updatePagesLabel() {
+      var on = st.pages.length - Object.keys(st.excluded).length;
+      el('pf-label').textContent = on === st.pages.length
+        ? 'Все страницы' : on + ' из ' + st.pages.length + ' ' + plural(st.pages.length, 'страницы', 'страниц', 'страниц');
+    }
+
+    function bindDisc(togId, chevId, bodyId) {
+      var open = false;
+      el(togId).addEventListener('click', function () {
+        open = !open;
+        el(chevId).classList.toggle('open', open);
+        el(bodyId).style.display = open ? 'block' : 'none';
+        requestAnimationFrame(reportHeight);
+      });
+    }
+    bindDisc('pf-toggle', 'pf-chev', 'pf-body');
+    bindDisc('rl-toggle', 'rl-chev', 'rl-body');
+
+    /* ——— скоуп ——— */
+    function setScope(v) {
+      st.scope = v;
+      var btns = el('scope').querySelectorAll('.seg-btn');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].classList.toggle('active', btns[i].getAttribute('data-value') === v);
+      }
+      el('pf').style.display = v === 'file' ? 'block' : 'none';
+      updateFooter();
+      requestAnimationFrame(reportHeight);
+    }
+    (function () {
+      var btns = el('scope').querySelectorAll('.seg-btn');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function () { setScope(this.getAttribute('data-value')); });
+      }
+    })();
+
+    /* ——— подвал ——— */
+    function blockedReasonToScan() {
+      if (!activeRules().length) return 'Включите хотя бы одно правило';
+      if (st.scope === 'selection' && !st.selCount) return 'Выделите слой или фрейм';
+      if (st.scope === 'file' && st.pages.length && Object.keys(st.excluded).length === st.pages.length) {
+        return 'Выберите хотя бы одну страницу';
+      }
+      return '';
+    }
+    function fixableIds() {
+      if (!st.groups) return [];
+      var ids = [];
+      st.groups.forEach(function (g) {
+        if (g.status !== 'fix' || !st.rules[g.rule]) return;
+        g.items.forEach(function (it) { ids.push(it.id); });
+      });
+      return ids;
+    }
+    function updateFooter() {
+      var label = el('f-label'), main = el('btn-main'), rescan = el('btn-rescan');
+      var stop = blockedReasonToScan();
+
+      if (st.phase === 'scanning' || st.phase === 'fixing') {
+        rescan.style.display = 'none';
+        main.textContent = 'Отменить';
+        main.className = 'btn ghost';
+        main.disabled = false;
+        return;
+      }
+
+      main.className = 'btn';
+      if (st.phase === 'results') {
+        var ids = fixableIds();
+        rescan.style.display = '';
+        rescan.textContent = 'Проверить снова';
+        if (ids.length) {
+          main.style.display = '';
+          main.textContent = 'Исправить всё · ' + ids.length;
+          main.disabled = false;
+        } else {
+          main.textContent = 'Исправить всё';
+          main.style.display = 'none';
+        }
+        var hints = [];
+        if (st.rulesDirty) hints.push('Правила изменились');
+        label.textContent = hints.join(' · ');
+        label.title = st.rulesDirty
+          ? 'Список показан по новым правилам, но файл проверен по старым — запустите проверку снова.'
+          : '';
+        return;
+      }
+
+      rescan.style.display = 'none';
+      main.style.display = '';
+      main.textContent = 'Проверить';
+      main.disabled = !!stop;
+      label.textContent = stop || (st.scope === 'selection' && st.selCount
+        ? (st.selCount === 1 ? 'Выделено: ' + st.selName : 'Выделено ' + st.selCount + ' ' + plural(st.selCount, 'слой', 'слоя', 'слоёв'))
+        : 'Выберите область и нажмите «Проверить»');
+    }
+
+    el('btn-main').addEventListener('click', function () {
+      if (st.phase === 'scanning') { send({ type: 'cancel-scan' }); el('f-label').textContent = 'Отменяю…'; return; }
+      if (st.phase === 'fixing') { send({ type: 'cancel-fix' }); el('f-label').textContent = 'Отменяю…'; return; }
+      if (st.phase === 'results') { doFix(fixableIds()); return; }
+      doScan();
+    });
+    el('btn-rescan').addEventListener('click', doScan);
+
+    function doScan() {
+      if (blockedReasonToScan()) return;
+      var msg = { type: 'scan', scope: st.scope, rules: st.rules, scanHidden: st.scanHidden };
+      if (st.scope === 'file') {
+        var ex = Object.keys(st.excluded);
+        if (ex.length) msg.excludePageIds = ex;
+      }
+      send(msg);
+    }
+    function doFix(ids) {
+      if (!ids || !ids.length) return;
+      send({ type: 'fix', ids: ids });
+    }
+
+    /* ——— переключение состояний ——— */
+    function showPhase(phase) {
+      st.phase = phase;
+      el('state-idle').style.display = phase === 'idle' ? '' : 'none';
+      el('state-progress').style.display = (phase === 'scanning' || phase === 'fixing') ? '' : 'none';
+      if (phase !== 'results') {
+        el('summary').style.display = 'none';
+        el('results').innerHTML = '';
+        el('alerts').style.display = 'none';
+      }
+      if (phase !== 'msg') el('state-msg').style.display = 'none';
+      updateFooter();
+      requestAnimationFrame(reportHeight);
+    }
+    function showMessage(text) {
+      st.phase = 'msg';
+      el('state-idle').style.display = 'none';
+      el('state-progress').style.display = 'none';
+      el('summary').style.display = 'none';
+      el('alerts').style.display = 'none';
+      el('results').innerHTML = '';
+      var m = el('state-msg');
+      m.style.display = ''; m.textContent = text;
+      st.groups = null;
+      updateFooter();
+      requestAnimationFrame(reportHeight);
+    }
+
+    /* ——— отрисовка результатов ——— */
+    function snippetHtml(sn) {
+      var chip;
+      if (sn.put === '') chip = '<span class="chip del" title="убрать">' + (sn.mid.length > 1 ? '··' : '·') + '</span>';
+      else if (sn.mid === '') chip = '<span class="chip ins" title="поставить неразрывный пробел">+</span>';
+      else chip = '<span class="chip" title="обычный пробел → неразрывный">·</span>';
+      return '<span class="sn"><span class="sn-l">' + esc(sn.left) + '</span>' + chip +
+             '<span class="sn-r">' + esc(sn.right) + '</span></span>';
+    }
+
+    function renderGroup(container, g, items) {
+      var group = document.createElement('div');
+      group.className = 'group';
+      var meta = RULE_BY_ID[g.rule] || { label: g.rule };
+      // В шапке группы места мало: там короткая подпись, полная — в подсказке.
+      var title = meta.short || meta.label;
+      // У исправимых находок бейджа нет: их большинство, и метка «Исправим» ничего
+      // не сообщает — только шумит. Бейдж остаётся там, где он несёт информацию.
+      var badge = g.status === 'fix' ? null : BADGE[g.status];
+      var openKey = g.key;
+      var isOpen = st.expanded[openKey] !== false;
+
+      var head = document.createElement('div');
+      head.className = 'g-head';
+      head.innerHTML =
+        '<span class="chev' + (isOpen ? ' open' : '') + '"></span>' +
+        '<span class="g-name" title="' + esc(meta.label) + '">' + esc(title) + '</span>' +
+        (badge ? '<span class="badge badge-' + g.status + '" data-badge="' + g.status + '">' + badge.ic + esc(badge.label) + '</span>' : '') +
+        '<span class="g-count">' + items.length + '</span>';
+      if (g.status === 'fix') {
+        var gfix = document.createElement('button');
+        gfix.className = 'g-fix';
+        gfix.textContent = 'Исправить все';
+        gfix.addEventListener('click', function (e) {
+          e.stopPropagation();
+          doFix(items.map(function (it) { return it.id; }));
+        });
+        head.appendChild(gfix);
+      }
+
+      // Пояснения к правилу здесь не показываем: то же самое есть в блоке «Правила»,
+      // куда идут осознанно, а в списке оно отжимало вниз саму работу — находки.
+      var rows = document.createElement('div');
+      rows.className = 'rows';
+      rows.style.display = isOpen ? 'block' : 'none';
+
+      items.forEach(function (it) {
+        var row = document.createElement('div');
+        row.className = 'row' + (g.status === 'fix' ? '' : ' blocked');
+        row.setAttribute('data-id', it.id);
+        row.setAttribute('data-node', it.nodeId);
+        row.title = 'Показать на канвасе';
+        var right = g.status === 'blocked'
+          ? esc(it.reason || '')
+          : esc(it.note || it.screen || '');
+        row.innerHTML = snippetHtml(it.snippet) +
+          '<span class="row-meta" title="' + esc((it.screen || '') + (it.note ? ' · ' + it.note : '')) + '">' + right + '</span>';
+        if (g.status === 'fix') {
+          var b = document.createElement('button');
+          b.className = 'row-fix';
+          b.textContent = 'Исправить';
+          b.addEventListener('click', function (e) { e.stopPropagation(); doFix([it.id]); });
+          row.appendChild(b);
+        }
+        row.addEventListener('click', function () {
+          st.lastClicked = it.id;
+          send({ type: 'focus', id: it.id });
+        });
+        rows.appendChild(row);
+      });
+
+      head.addEventListener('click', function () {
+        var nowOpen = !(st.expanded[openKey] !== false);
+        st.expanded[openKey] = nowOpen;
+        head.querySelector('.chev').classList.toggle('open', nowOpen);
+        rows.style.display = nowOpen ? 'block' : 'none';
+        requestAnimationFrame(reportHeight);
+      });
+
+      group.appendChild(head); group.appendChild(rows);
+      container.appendChild(group);
+    }
+
+    function renderAlerts() {
+      var box = el('alerts');
+      box.innerHTML = '';
+      var a = st.alerts;
+      if (!a || (!a.fixed && !a.resized.length && !a.failed.length)) { box.style.display = 'none'; return; }
+      box.style.display = '';
+
+      // Плашки живут до новой проверки или следующей правки, потому что в них есть
+      // действие «вернуть». Поэтому у каждой свой крестик: прочитал «исправлено» —
+      // убрал, проверил размер глазами — убрал. Общий крестик читался как часть
+      // первой плашки, хотя закрывал все.
+      function withClose(node, drop) {
+        var x = document.createElement('button');
+        x.className = 'alerts-close';
+        x.setAttribute('aria-label', 'Скрыть');
+        x.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" aria-hidden="true">' +
+          '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+        x.addEventListener('click', function (e) {
+          e.stopPropagation();
+          drop();
+          renderAlerts();
+          requestAnimationFrame(reportHeight);
+        });
+        node.appendChild(x);
+      }
+
+      function block(kind, title, list, withRevert, drop) {
+        var d = document.createElement('div');
+        d.className = 'alert' + (kind === 'bad' ? ' bad' : '');
+        var lines = list.slice(0, 6).map(function (x) {
+          var name = (x.screen ? x.screen + ' · ' : '') + (x.layer || '');
+          var tail = withRevert
+            ? (x.dh ? (x.dh > 0 ? 'выше на ' + x.dh + ' px' : 'ниже на ' + (-x.dh) + ' px') : (x.dw > 0 ? 'шире на ' + x.dw + ' px' : 'уже на ' + (-x.dw) + ' px'))
+            : x.reason;
+          return '<div class="alert-line"><span class="al-name" title="' + esc(name) + '">' + esc(name || 'слой') + '</span>' +
+            '<span>' + esc(tail) + '</span>' +
+            (withRevert ? '<span class="al-act" data-revert="' + esc(x.nodeId) + '">вернуть</span>' : '') + '</div>';
+        }).join('');
+        var rest = list.length > 6 ? '<div class="alert-line"><span class="al-name">и ещё ' + (list.length - 6) + '</span></div>' : '';
+        d.innerHTML =
+          '<svg class="alert-ic" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+          '<path d="M8 2.2l6 11.6H2L8 2.2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>' +
+          '<path d="M8 6.4v3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>' +
+          '<circle cx="8" cy="11.6" r="0.8" fill="currentColor"/></svg>' +
+          '<div class="alert-body"><strong>' + esc(title) + '</strong>' + lines + rest + '</div>';
+        withClose(d, drop);
+        box.appendChild(d);
+      }
+
+      if (a.fixed) {
+        var okBox = document.createElement('div');
+        okBox.className = 'alert ok';
+        okBox.innerHTML =
+          '<svg class="alert-ic" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+          '<path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+          '<div class="alert-body"><strong>Исправлено ' + a.fixed + '</strong> — отменить всё сразу можно через Cmd + Z</div>';
+        withClose(okBox, function () { st.alerts.fixed = 0; });
+        box.appendChild(okBox);
+      }
+      if (a.resized.length) {
+        block('warn', 'Изменился размер: ' + a.resized.length + ' ' + plural(a.resized.length, 'слой', 'слоя', 'слоёв') + ' — посмотрите глазами', a.resized, true, function () { st.alerts.resized = []; });
+      }
+      if (a.failed.length) {
+        block('bad', 'Не смог исправить: ' + a.failed.length, a.failed, false, function () { st.alerts.failed = []; });
+      }
+      box.querySelectorAll('.al-act').forEach(function (n) {
+        n.addEventListener('click', function () { send({ type: 'revert', nodeId: n.getAttribute('data-revert') }); });
+      });
+    }
+
+    function renderResults() {
+      if (!st.groups) return;
+      // «Не проверено» — служебная категория: её не выключают галочкой правил,
+      // поэтому фильтр по правилам её не касается, иначе она пропала бы из списка.
+      var groups = st.groups.filter(function (g) {
+        return g.items.length && (g.status === 'unchecked' || st.rules[g.rule]);
+      });
+      var container = el('results');
+      container.innerHTML = '';
+
+      var total = 0, cFix = 0, cBlocked = 0, cUnchecked = 0;
+      groups.forEach(function (g) {
+        total += g.items.length;
+        if (g.status === 'blocked') cBlocked += g.items.length;
+        else if (g.status === 'unchecked') cUnchecked += g.items.length;
+        else cFix += g.items.length;
+      });
+
+      if (!total) {
+        showMessage(st.rulesDirty ? 'По включённым правилам находок нет — проверьте снова' : 'Чисто — ни одной находки');
+        renderAlerts();
+        return;
+      }
+
+      st.phase = 'results';
+      el('state-idle').style.display = 'none';
+      el('state-progress').style.display = 'none';
+      el('state-msg').style.display = 'none';
+
+      var pageSet = {}, multiPage = false;
+      groups.forEach(function (g) { g.items.forEach(function (it) { pageSet[it.pageId] = it.pageName; }); });
+      multiPage = Object.keys(pageSet).length > 1;
+
+      var sum = el('summary');
+      var html = '<span class="sum-items">';
+      // Зелёной точки здесь нет: цветом помечаем только то, куда нужно посмотреть,
+      // а исправимые находки — обычная работа, а не исключение.
+      if (cFix) html += '<span class="sum-item">' + cFix + ' исправим</span>';
+      if (cBlocked) html += '<span class="sum-item"><span class="sum-dot dot-blocked"></span>' + cBlocked + ' нельзя</span>';
+      if (cUnchecked) html += '<span class="sum-item">' + cUnchecked + ' не проверено</span>';
+      html += '</span><span class="sum-actions">';
+      if (multiPage) html += '<button class="pill' + (st.byPage ? ' active' : '') + '" id="p-bypage">По страницам</button>';
+      html += '<button class="pill" id="p-toggle">' + (allOpen(groups) ? 'Свернуть все' : 'Развернуть все') + '</button>';
+      html += '</span>';
+      sum.innerHTML = html;
+      sum.style.display = 'flex';
+
+      if (multiPage) {
+        el('p-bypage').addEventListener('click', function () { st.byPage = !st.byPage; renderResults(); });
+      }
+      el('p-toggle').addEventListener('click', function () {
+        var open = !allOpen(groups);
+        groups.forEach(function (g) { st.expanded[g.key] = open; });
+        renderResults();
+      });
+
+      if (st.byPage && multiPage) {
+        var order = [], byPage = {};
+        groups.forEach(function (g) {
+          g.items.forEach(function (it) {
+            if (!byPage[it.pageId]) { byPage[it.pageId] = {}; order.push({ id: it.pageId, name: it.pageName }); }
+            if (!byPage[it.pageId][g.key]) byPage[it.pageId][g.key] = { g: g, items: [] };
+            byPage[it.pageId][g.key].items.push(it);
+          });
+        });
+        order.forEach(function (pg) {
+          var h = document.createElement('div');
+          h.className = 'page-head';
+          h.textContent = pg.name;
+          container.appendChild(h);
+          Object.keys(byPage[pg.id]).forEach(function (k) {
+            renderGroup(container, byPage[pg.id][k].g, byPage[pg.id][k].items);
+          });
+        });
+      } else {
+        groups.forEach(function (g) { renderGroup(container, g, g.items); });
+      }
+
+      renderAlerts();
+      applyHighlight();
+      updateFooter();
+      requestAnimationFrame(reportHeight);
+    }
+    function allOpen(groups) {
+      return groups.every(function (g) { return st.expanded[g.key] !== false; });
+    }
+
+    /* ——— подсветка выделения: чистая производная от выделения на канвасе ——— */
+    function applyHighlight() {
+      var rows = el('results').querySelectorAll('.row');
+      var target = null;
+      for (var i = 0; i < rows.length; i++) {
+        var on = !!st.selIds[rows[i].getAttribute('data-node')];
+        rows[i].classList.toggle('active', on);
+        if (on && !target) target = rows[i];
+        if (on && rows[i].getAttribute('data-id') === st.lastClicked) target = rows[i];
+      }
+      if (target && target.scrollIntoView) target.scrollIntoView({ block: 'nearest' });
+    }
+
+    /* ——— всплывающие подсказки статусов ——— */
+    var tipEl = el('tip');
+    el('results').addEventListener('mouseover', function (e) {
+      var b = e.target.closest ? e.target.closest('.badge') : null;
+      if (!b) return;
+      var key = b.getAttribute('data-badge');
+      if (!BADGE[key] || !BADGE[key].tip) return;
+      tipEl.innerHTML = BADGE[key].tip;
+      tipEl.style.display = 'block';
+      var r = b.getBoundingClientRect();
+      var tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
+      var vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+      var left = Math.min(Math.max(6, r.right - tw), vw - 6 - tw);
+      var top = r.bottom + 7;
+      if (top + th > vh - 6) top = Math.max(6, r.top - 7 - th);
+      tipEl.style.left = left + 'px'; tipEl.style.top = top + 'px';
+    });
+    el('results').addEventListener('mouseout', function (e) {
+      if (e.target.closest && e.target.closest('.badge')) tipEl.style.display = 'none';
+    });
+
+    // По умолчанию скрытые слои не показываем: в реальных файлах их много —
+    // состояния компонентов, неактивные варианты, — и список утонул бы в шуме.
+    // Подтвердить находку в них нельзя: у невидимого текста нет переносов.
+    el('cb-hidden').addEventListener('change', function () {
+      st.scanHidden = this.checked;
+      if (st.groups) { st.rulesDirty = true; updateFooter(); }
+    });
+
+    var si = el('scope-info');
+    si.addEventListener('click', function (e) { e.stopPropagation(); si.classList.toggle('pinned'); });
+    document.addEventListener('click', function () { si.classList.remove('pinned'); });
+
+    /* ——— сообщения из плагина ——— */
+    function handle(msg) {
+      if (!msg) return;
+
+      if (msg.type === 'pages') {
+        st.pages = msg.pages || [];
+        renderPages();
+        return;
+      }
+
+      if (msg.type === 'selection') {
+        st.selCount = msg.count || 0;
+        st.selName = msg.name || '';
+        st.selIds = {};
+        (msg.ids || []).forEach(function (id) { st.selIds[id] = true; });
+        applyHighlight();
+        // Выделил слой — значит, скорее всего, хочет проверить его. Но если уже есть
+        // результаты другого прогона, скоуп не трогаем: выделение мог поставить сам
+        // плагин при переходе по строке.
+        if (st.selCount && !(st.groups && st.scope !== 'selection')) setScope('selection');
+        updateFooter();
+        return;
+      }
+
+      if (msg.type === 'scan-start') {
+        st.groups = null; st.alerts = null; st.rulesDirty = false;
+        showPhase('scanning');
+        el('progress-text').textContent = 'Собираю тексты…';
+        return;
+      }
+      if (msg.type === 'scan-collect') {
+        el('progress-text').textContent = 'Открываю «' + msg.pageName + '»\n' + msg.current + ' из ' + msg.total + ' ' + plural(msg.total, 'страницы', 'страниц', 'страниц');
+        return;
+      }
+      if (msg.type === 'scan-progress') {
+        el('progress-text').textContent = 'Смотрю «' + msg.pageName + '»\n' + num(msg.current) + ' из ' + num(msg.total) + ' ' + plural(msg.total, 'текста', 'текстов', 'текстов');
+        return;
+      }
+      if (msg.type === 'scan-cancelled') { showMessage('Проверка отменена'); return; }
+      if (msg.type === 'scan-error') { showMessage('Проверка сломалась: ' + msg.message); return; }
+
+      if (msg.type === 'fix-start') {
+        showPhase('fixing');
+        el('progress-text').textContent = 'Исправляю…';
+        return;
+      }
+      if (msg.type === 'fix-progress') {
+        el('progress-text').textContent = 'Исправляю\n' + msg.current + ' из ' + msg.total + ' ' + plural(msg.total, 'слоя', 'слоёв', 'слоёв');
+        return;
+      }
+      if (msg.type === 'fix-error') { showMessage('Правка сломалась: ' + msg.message); return; }
+
+      if (msg.type === 'results') {
+        st.groups = msg.groups || [];
+        st.counts = msg.counts || { fix: 0, blocked: 0 };
+        if (msg.scanned != null) { st.scanned = msg.scanned; }
+        if (msg.reverted && st.alerts) {
+          st.alerts.resized = st.alerts.resized.filter(function (x) { return x.nodeId !== msg.reverted; });
+          st.alerts.failed = st.alerts.failed.filter(function (x) { return x.nodeId !== msg.reverted; });
+        }
+        if (msg.fixed != null || msg.failed || msg.resized) {
+          st.alerts = { fixed: msg.fixed || 0, resized: msg.resized || [], failed: msg.failed || [] };
+        }
+        st.rulesDirty = false;
+        renderResults();
+        return;
+      }
+
+      if (msg.type === 'nodes-updated') {
+        if (!st.groups) return;
+        var updates = msg.updates || [];
+        updates.forEach(function (u) {
+          st.groups.forEach(function (g) {
+            g.items = g.items.filter(function (it) { return it.nodeId !== u.nodeId; });
+          });
+        });
+        updates.forEach(function (u) {
+          (u.items || []).forEach(function (it) {
+            var key = (it.rule || '') + '::' + (it.status || 'fix');
+            var g = null;
+            for (var i = 0; i < st.groups.length; i++) if (st.groups[i].key === key) { g = st.groups[i]; break; }
+            if (g) g.items.push(it);
+          });
+        });
+        st.groups = st.groups.filter(function (g) { return g.items.length; });
+        renderResults();
+        return;
+      }
+    }
+
+    window.addEventListener('message', function (e) {
+      var m = e.data && e.data.pluginMessage;
+      if (m) handle(m);
+    });
+
+    renderRules();
+    updateFooter();
+    requestAnimationFrame(reportHeight);
+
+  })();
+  </script>
+</body>
+</html>

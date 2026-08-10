@@ -1,0 +1,1030 @@
+"use strict";
+/**
+ * Nobreak — плагин ищет и правит типографику в текстах макета.
+ *
+ * Файл делится на две части:
+ *   1) ДЕТЕКТОР — чистые функции без Figma. Их же подключает tests/detector.test.mjs,
+ *      поэтому сборка не нужна: один и тот же code.js работает и в плагине, и в Node.
+ *   2) ПЛАГИН — обвязка Figma. Запускается только там, где есть объект figma.
+ *
+ * Почему посимвольный скан, а не регэкспы: `\b` в JS опирается на ASCII, и после
+ * кириллической единицы («км», «л») границы слова нет — лукахед молча не срабатывает.
+ * А `/g`-регэксп в `.test()` двигает lastIndex и пропускает ноды в цикле. Оба грабля
+ * уже наступали, поэтому здесь только посимвольные проверки.
+ */
+
+/* ============================================================================
+   ЧАСТЬ 1 · ДЕТЕКТОР
+   ========================================================================= */
+
+var NBSP = ' ';
+
+/**
+ * Служебные слова, которые нельзя оставлять в конце строки: они относятся
+ * к следующему слову, поэтому приклеиваем их неразрывным пробелом.
+ *
+ * Это ЗАКРЫТЫЙ СЛОВАРЬ, а не проверка по длине: длина не определяет предлог
+ * («о» — предлог, «около» — тоже, «он» — нет). Длина влияет только на то,
+ * в какое из двух правил попадёт слово: короткие (1–3 буквы) правим всегда,
+ * длинные (4+) — отдельным правилом, которое можно выключить, если шумит.
+ *
+ * Слова с «ё» пишем через «е» — при поиске «ё» нормализуется.
+ */
+var FUNC_WORDS = [
+  // предлоги непроизводные
+  'в', 'во', 'к', 'ко', 'о', 'об', 'обо', 'с', 'со', 'у', 'до', 'за', 'из', 'изо',
+  'на', 'над', 'надо', 'от', 'ото', 'по', 'под', 'подо', 'при', 'про', 'без', 'безо',
+  'для', 'перед', 'передо', 'через', 'чрез', 'сквозь', 'между', 'меж', 'из-за', 'из-под',
+  // предлоги производные
+  'близ', 'вблизи', 'ввиду', 'вдоль', 'взамен', 'включая', 'вместо', 'вне', 'внутри',
+  'возле', 'вокруг', 'вопреки', 'впереди', 'вроде', 'вследствие', 'вслед', 'выше',
+  'исключая', 'кроме', 'кругом', 'мимо', 'накануне', 'наперекор', 'наподобие', 'напротив',
+  'наряду', 'насчет', 'начиная', 'невзирая', 'несмотря', 'ниже', 'около', 'относительно',
+  'поверх', 'подле', 'после', 'помимо', 'поперек', 'посреди', 'посередине', 'посредством',
+  'против', 'путем', 'ради', 'сверх', 'свыше', 'согласно', 'сообразно', 'соответственно',
+  'спустя', 'среди', 'супротив', 'благодаря',
+  // союзы
+  'а', 'и', 'но', 'да', 'или', 'либо', 'что', 'чтоб', 'чтобы', 'как', 'чем', 'если',
+  'хотя', 'пока', 'ибо', 'тоже', 'также', 'зато', 'притом', 'причем', 'будто', 'дабы',
+  'коли', 'ежели', 'нежели', 'поскольку', 'потому', 'оттого', 'затем', 'впрочем', 'однако',
+  // частицы, которые относятся к следующему слову
+  'не', 'ни'
+];
+
+var FUNC_SHORT = {}, FUNC_LONG = {};
+for (var fw = 0; fw < FUNC_WORDS.length; fw++) {
+  var w = FUNC_WORDS[fw];
+  if (w.length <= 3) FUNC_SHORT[w] = true; else FUNC_LONG[w] = true;
+}
+
+/**
+ * Единицы измерения, которые прилипают к числу слева (TYP-03).
+ *
+ * Кроме сокращений держим ПОЛНЫЕ формы времени и количества: в интерфейсе «15 минут»
+ * встречается чаще, чем «15 мин», и разрыв «15 / минут» — такой же дефект. Список
+ * закрытый и только про время и деньги: произвольные существительные сюда нельзя,
+ * иначе склеится «100 объявлений» и «3 клиента», где число и слово не единица.
+ *
+ * Ложные срабатывания отсекает проверка «единица не начало другого слова»:
+ * «5 часть» не поймается на «час», «5 деньги» — на «день».
+ */
+var UNITS = [
+  'л.с.', 'кВт', 'млрд', 'млн', 'тыс', 'МБ', 'ГБ', 'КБ', 'ТБ', 'мес', 'мин', 'сек',
+  'шт', 'чел', 'дн', 'км', 'см', 'мм', 'кг', 'мл', 'м²', 'м³', 'га', 'л', 'м', 'т',
+  'г', 'ч', 'п',
+  // время
+  'секунда', 'секунды', 'секунд', 'минута', 'минуты', 'минут',
+  'час', 'часа', 'часов', 'день', 'дня', 'дней', 'сутки', 'суток',
+  'неделя', 'недели', 'недель', 'месяц', 'месяца', 'месяцев',
+  'год', 'года', 'лет',
+  // количество и деньги
+  'тысяча', 'тысячи', 'тысяч', 'миллион', 'миллиона', 'миллионов',
+  'миллиард', 'миллиарда', 'миллиардов', 'тенге', 'рубля', 'рублей'
+].sort(function (a, b) { return b.length - a.length; });
+
+/** Валюты и знаки, которые отбиваются от числа неразрывным пробелом (NUM-03). */
+var CURRENCY = ['₸', '$', '€', '₽', '¥', '£'];
+
+var RULE_ORDER = { hang: 0, hangLong: 1, dash: 2, num: 3, space: 4, nofont: 5, hidden: 6 };
+var STATUS_ORDER = { fix: 0, blocked: 1, unchecked: 2 };
+
+function isWordChar(ch) {
+  return !!ch && /[0-9A-Za-zА-Яа-яЁё]/.test(ch);
+}
+function isLetter(ch) {
+  return !!ch && /[A-Za-zА-Яа-яЁё]/.test(ch);
+}
+function isDigit(ch) {
+  return !!ch && ch >= '0' && ch <= '9';
+}
+function normWord(s) {
+  return s.toLowerCase().replace(/ё/g, 'е');
+}
+
+/** Слово, начинающееся в позиции i (для подписи находки). */
+function wordAt(t, i) {
+  var s = i;
+  while (i < t.length && isWordChar(t[i])) i++;
+  return t.slice(s, i);
+}
+
+/**
+ * Висячие служебные слова: слово из словаря + обычный пробел + слово.
+ * Пробел заменяем на неразрывный. tier: 'hang' (1–3 буквы) или 'hangLong' (4+).
+ */
+function findHanging(t, out, enabled) {
+  var i = 0;
+  while (i < t.length) {
+    if (!isLetter(t[i])) { i++; continue; }
+    var s = i;
+    while (i < t.length && isWordChar(t[i])) i++;
+    var raw = t.slice(s, i);
+    var key = normWord(raw);
+    var tier = FUNC_SHORT[key] ? 'hang' : (FUNC_LONG[key] ? 'hangLong' : null);
+    if (!tier || !enabled[tier]) continue;
+    // Правим только обычный пробел: если там уже неразрывный, находки нет —
+    // отсюда идемпотентность, повторный прогон ничего не меняет.
+    if (t[i] !== ' ' || !isWordChar(t[i + 1])) continue;
+    out.push({
+      rule: tier, at: i, len: 1, put: NBSP,
+      word: raw, next: wordAt(t, i + 1)
+    });
+  }
+}
+
+/** Перед длинным тире — неразрывный пробел, чтобы тире не уехало на новую строку. */
+function findDash(t, out) {
+  for (var i = 1; i < t.length; i++) {
+    var ch = t[i];
+    if (ch !== '—' && ch !== '–') continue;
+    if (t[i - 1] !== ' ') continue;
+    if (i - 2 < 0) continue;
+    out.push({ rule: 'dash', at: i - 1, len: 1, put: NBSP, word: '', next: ch });
+  }
+}
+
+/** Число + единица, валюта, разряды тысяч, «№», «%» слитно. */
+function findNumUnit(t, out) {
+  for (var i = 0; i < t.length; i++) {
+    var ch = t[i];
+
+    // «№124» → «№ 124», «№ 124» с обычным пробелом → с неразрывным (TYP-08)
+    if (ch === '№') {
+      var n = t[i + 1];
+      if (isWordChar(n)) { out.push({ rule: 'num', at: i + 1, len: 0, put: NBSP, note: 'знак номера' }); }
+      else if (n === ' ' && isWordChar(t[i + 2])) { out.push({ rule: 'num', at: i + 1, len: 1, put: NBSP, note: 'знак номера' }); }
+      continue;
+    }
+
+    if (ch !== ' ') continue;
+    var rest = t.slice(i + 1);
+    var head = rest.charAt(0);
+
+    // Знак валюты не должен начинать строку, и слева от пробела не обязательно цифра:
+    // «5 500 000 ₸», но и «500 тысяч ₸», «4 млн ₸». Поэтому проверяем до цифровой границы.
+    //
+    // Исключение — знак ПЕРЕД числом («$ 50»): он относится к числу справа, и склеивать
+    // его с предыдущим словом бессмысленно. Такую пару чинит другое правило, которого у нас нет.
+    if (CURRENCY.indexOf(head) !== -1 && isWordChar(t[i - 1])) {
+      var afterCur = rest.charAt(1);
+      if (!isDigit(afterCur) && !(afterCur === ' ' && isDigit(rest.charAt(2)))) {
+        out.push({ rule: 'num', at: i, len: 1, put: NBSP, note: 'валюта' });
+        continue;
+      }
+    }
+
+    if (!isDigit(t[i - 1])) continue;
+
+    if (isDigit(head)) { out.push({ rule: 'num', at: i, len: 1, put: NBSP, note: 'разряды тысяч' }); continue; }
+    if (head === '%') { out.push({ rule: 'num', at: i, len: 1, put: '', note: 'процент пишем слитно' }); continue; }
+
+    for (var u = 0; u < UNITS.length; u++) {
+      var unit = UNITS[u];
+      if (rest.indexOf(unit) !== 0) continue;
+      // единица не должна быть началом другого слова: «5 литров» — не «5 л»
+      if (isWordChar(rest.charAt(unit.length))) continue;
+      out.push({ rule: 'num', at: i, len: 1, put: NBSP, note: 'число и единица' });
+      break;
+    }
+  }
+}
+
+/** Двойные пробелы и пробелы в начале и конце строки. */
+function findSpaces(t, out) {
+  var i = 0;
+  while (i < t.length) {
+    if (t[i] !== ' ') { i++; continue; }
+    var j = i;
+    while (j < t.length && t[j] === ' ') j++;
+    var run = j - i;
+    var atStart = i === 0 || t[i - 1] === '\n' || t[i - 1] === ' ';
+    var atEnd = j >= t.length || t[j] === '\n' || t[j] === ' ';
+    if (atStart || atEnd) {
+      out.push({ rule: 'space', at: i, len: run, put: '', note: atEnd ? 'пробел в конце строки' : 'пробел в начале строки' });
+    } else if (run > 1) {
+      out.push({ rule: 'space', at: i + 1, len: run - 1, put: '', note: 'двойной пробел' });
+    }
+    i = j;
+  }
+}
+
+/**
+ * Разбор строки. Возвращает список правок вида
+ * {rule, at, len, put} — «заменить len символов с позиции at на put».
+ * Правки не пересекаются: один и тот же пробел не правим двумя правилами.
+ */
+function analyze(text, enabled) {
+  var out = [];
+  if (!text) return out;
+  enabled = enabled || {};
+  if (enabled.hang || enabled.hangLong) findHanging(text, out, enabled);
+  if (enabled.dash) findDash(text, out);
+  if (enabled.num) findNumUnit(text, out);
+  if (enabled.space) findSpaces(text, out);
+  out.sort(function (a, b) {
+    return (a.at - b.at) || (RULE_ORDER[a.rule] - RULE_ORDER[b.rule]);
+  });
+  var res = [], lastEnd = -1;
+  for (var i = 0; i < out.length; i++) {
+    var e = out[i];
+    if (e.at < lastEnd) continue;
+    // Что именно заменяем. Правка обязана описывать себя целиком: по `was` потом
+    // сверяется, не изменился ли текст с момента проверки, и строится откат.
+    e.was = text.slice(e.at, e.at + e.len);
+    res.push(e);
+    lastEnd = e.at + (e.len > 0 ? e.len : 1);
+  }
+  return res;
+}
+
+/** Применить правки к строке (используется в тестах и при правке через свойство). */
+function applyEdits(text, edits) {
+  var t = text;
+  var sorted = edits.slice().sort(function (a, b) { return a.at - b.at; });
+  for (var i = sorted.length - 1; i >= 0; i--) {
+    var e = sorted[i];
+    t = t.slice(0, e.at) + e.put + t.slice(e.at + e.len);
+  }
+  return t;
+}
+
+/**
+ * Обратные правки для кнопки «Вернуть». Позиции считаются в УЖЕ исправленной строке:
+ * каждая применённая правка сдвигает всё, что правее неё, на put.length - len.
+ * Возвращать текст целиком нельзя — перезапись строки схлопывает смешанное
+ * форматирование так же, как и при правке, поэтому откат тоже точечный.
+ */
+function inverseEdits(edits) {
+  var asc = edits.slice().sort(function (a, b) { return a.at - b.at; });
+  var out = [];
+  var offset = 0;
+  for (var i = 0; i < asc.length; i++) {
+    var e = asc[i];
+    var was = e.was == null ? '' : e.was;
+    out.push({ at: e.at + offset, len: e.put.length, put: was });
+    offset += e.put.length - e.len;
+  }
+  return out;
+}
+
+/* ————— раскладка строк: что Figma реально отрисовала ————— */
+
+function decodeXml(s) {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, function (_, h) { return String.fromCodePoint(parseInt(h, 16)); })
+    .replace(/&#(\d+);/g, function (_, d) { return String.fromCodePoint(parseInt(d, 10)); })
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * Строки текста в том виде, в каком их разложила Figma. На входе SVG-экспорт слоя.
+ *
+ * Одна визуальная строка — это НЕ один <tspan>. Как только внутри строки меняется
+ * стиль (жирный фрагмент, другой размер, подчёркивание, цвет), Figma пишет несколько
+ * элементов <text>, и куски одной строки оказываются в разных из них с одинаковым y.
+ * Поэтому группируем по y, а внутри строки сортируем по x. Склейка по порядку
+ * документа даёт мусор — проверено на живом файле.
+ */
+function parseSvgLines(svg) {
+  var re = /<tspan([^>]*)>([\s\S]*?)<\/tspan>/g;
+  var rows = [], m;
+  while ((m = re.exec(svg)) !== null) {
+    var my = m[1].match(/\by="(-?[0-9.]+)"/);
+    var mx = m[1].match(/\bx="(-?[0-9.]+)"/);
+    rows.push({
+      y: my ? Math.round(parseFloat(my[1]) * 10) / 10 : 0,
+      x: mx ? parseFloat(mx[1]) : 0,
+      text: decodeXml(m[2])
+    });
+  }
+  var byY = new Map();
+  for (var i = 0; i < rows.length; i++) {
+    if (!byY.has(rows[i].y)) byY.set(rows[i].y, []);
+    byY.get(rows[i].y).push(rows[i]);
+  }
+  return Array.from(byY.keys()).sort(function (a, b) { return a - b; })
+    .map(function (k) {
+      return byY.get(k).sort(function (a, b) { return a.x - b.x; })
+        .map(function (r) { return r.text; }).join('');
+    });
+}
+
+/**
+ * Индексы пробелов, на которых произошёл перенос. Пробел входит в конец строки —
+ * это видно по экспорту, поэтому берём последний символ строки.
+ *
+ * Строку, кончающуюся переводом строки, пропускаем: перенос там поставил дизайнер
+ * руками, и неразрывный пробел его не сдвинет — починить нечем.
+ */
+function lineBreakSpaces(lines) {
+  var out = [], pos = 0;
+  for (var i = 0; i < lines.length; i++) {
+    pos += lines[i].length;
+    if (i === lines.length - 1) break;
+    if (lines[i].charAt(lines[i].length - 1) === ' ') out.push(pos - 1);
+  }
+  return out;
+}
+
+/**
+ * Оставляем только то, что висит на макете сейчас: находка признаётся, если её пробел —
+ * это тот самый пробел, на котором Figma перенесла строку.
+ *
+ * Правило «пробелы» не про переносы: двойной или хвостовой пробел — дефект текста
+ * при любой раскладке, поэтому оно проходит без проверки.
+ */
+function keepVisible(edits, lines) {
+  var brk = {};
+  lineBreakSpaces(lines).forEach(function (p) { brk[p] = true; });
+  return edits.filter(function (e) {
+    if (e.rule === 'space') return true;
+    return e.len > 0 && brk[e.at] === true;
+  });
+}
+
+/** Кусок текста вокруг находки — чтобы в списке было видно место, а не только имя слоя. */
+function snippet(text, e) {
+  var from = Math.max(0, e.at - 24);
+  var to = Math.min(text.length, e.at + e.len + 30);
+  return {
+    left: (from > 0 ? '…' : '') + text.slice(from, e.at).replace(/\n/g, ' '),
+    mid: text.slice(e.at, e.at + e.len).replace(/\n/g, ' '),
+    put: e.put,
+    right: text.slice(e.at + e.len, to).replace(/\n/g, ' ') + (to < text.length ? '…' : '')
+  };
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    analyze: analyze, applyEdits: applyEdits, inverseEdits: inverseEdits,
+    parseSvgLines: parseSvgLines, lineBreakSpaces: lineBreakSpaces, keepVisible: keepVisible,
+    snippet: snippet, NBSP: NBSP, FUNC_WORDS: FUNC_WORDS
+  };
+}
+
+/* ============================================================================
+   ЧАСТЬ 2 · ПЛАГИН
+   ========================================================================= */
+
+if (typeof figma !== 'undefined') {
+
+  var UI_W = 420;
+  figma.skipInvisibleInstanceChildren = true;
+  figma.showUI(__html__, { width: UI_W, height: 280, themeColors: true });
+
+  var scanHidden = false;
+  var rules = { hang: true, hangLong: true, dash: true, num: true, space: true };
+  var scanCancelled = false;
+  var fixCancelled = false;
+  var writing = false;
+
+  var findings = new Map();   // id → находка
+  var nodeMeta = new Map();   // nodeId → {pageId, pageName, screen, status, reason}
+  var undoText = new Map();   // nodeId → текст до правки (нужен там, где пишем в свойство компонента)
+  // nodeId → обратные точечные правки. Возвращать текст целиком нельзя: перезапись строки
+  // схлопывает смешанное форматирование так же, как и при правке. Поэтому «Вернуть» —
+  // это те же удаления и вставки, только наоборот.
+  var undoEdits = new Map();
+  var tracked = new Set();    // nodeId, за которыми следим после скана
+  var attachedPages = new Set();
+
+  var pause = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+
+  /* ——— выделение: одно сообщение и на старте, и на каждое изменение ——— */
+  function postSelection() {
+    var sel = figma.currentPage.selection;
+    figma.ui.postMessage({
+      type: 'selection',
+      count: sel.length,
+      name: sel.length === 1 ? sel[0].name : '',
+      ids: sel.map(function (n) { return n.id; })
+    });
+  }
+
+  function postPages() {
+    var pages = figma.root.children
+      .filter(function (c) { return c.type === 'PAGE'; })
+      .map(function (p) { return { id: p.id, name: p.name }; });
+    figma.ui.postMessage({ type: 'pages', pages: pages });
+  }
+
+  /* ——— контекст ноды ——— */
+
+  // Имя экрана: поднимаемся до верхнего фрейма, пропуская секции.
+  function screenOf(node) {
+    var chain = [], cur = node.parent;
+    while (cur && cur.type !== 'PAGE') { chain.push(cur); cur = cur.parent; }
+    if (!chain.length) return 'Вне фрейма';
+    var i = chain.length - 1;
+    while (i > 0 && chain[i].type === 'SECTION') i--;
+    return chain[i].name;
+  }
+
+  function visibleChain(node) {
+    var p = node;
+    while (p && p.type !== 'PAGE') { if (p.visible === false) return false; p = p.parent; }
+    return true;
+  }
+
+  function textPropRef(node) {
+    try {
+      var r = node.componentPropertyReferences;
+      return r && r.characters ? r.characters : null;
+    } catch (e) { return null; }
+  }
+
+  // Причина, по которой Figma не даст переписать текст. Находки показываем, но не правим —
+  // молча прятать их нельзя, иначе «0 находок» будет неправдой. Раскладку строк у таких
+  // слоёв прочитать можно, поэтому проверка на реальный перенос работает как обычно.
+  function blockedReason(node) {
+    try {
+      var bv = node.boundVariables;
+      if (bv && bv.characters) return 'текст подставляется из переменной';
+    } catch (e) { }
+    return '';
+  }
+
+  // Причина, по которой нельзя ДОВЕРЯТЬ раскладке строк. Без шрифта Figma рисует
+  // подменным, и переносы получаются не те, что видит дизайнер. Такой слой показываем
+  // одной строкой без разбора находок — лучше честная пометка, чем ложная точность.
+  function uncheckedReason(node) {
+    if (node.hasMissingFont) return 'в тексте нет шрифта — раскладка строк ненадёжна';
+    return '';
+  }
+
+  // Раскладка строк слоя: экспортируем в SVG и читаем, что Figma отрисовала.
+  // Экспорт только читает — файл не меняется, история отмены не растёт.
+  //
+  // Самопроверка: склейка строк обязана совпасть с текстом слоя. Если не совпала —
+  // помечаем слой непроверенным, а не гадаем. При ВЕРХНЕМ РЕГИСТРЕ экспорт отдаёт
+  // преобразованный текст той же длины, поэтому сравниваем без учёта регистра.
+  async function layoutLines(node, chars) {
+    var svg;
+    try {
+      svg = await node.exportAsync({ format: 'SVG_STRING', svgOutlineText: false });
+    } catch (e) {
+      return { lines: [], ok: false, why: 'слой не экспортируется' };
+    }
+    var lines = parseSvgLines(svg);
+    if (!lines.length) return { lines: [], ok: false, why: 'в экспорте нет текста' };
+    var joined = lines.join('').toLowerCase();
+    var src = chars.toLowerCase();
+    if (joined === src) return { lines: lines, ok: true, truncated: false };
+    // Обрезанный текст: в экспорте только видимая часть, и она обязана быть началом
+    // текста. Последняя видимая строка ничего не переносит, поэтому её обрыв
+    // посреди слова на результат не влияет — сама она находок не даёт.
+    if (src.indexOf(joined) === 0) return { lines: lines, ok: true, truncated: true };
+    return { lines: lines, ok: false, why: 'раскладка строк не сошлась с текстом' };
+  }
+
+  /* ——— сбор текстовых слоёв ——— */
+
+  function collectFrom(roots) {
+    var out = [];
+    for (var i = 0; i < roots.length; i++) {
+      var root = roots[i];
+      if (root.type === 'TEXT') out.push(root);
+      if ('findAllWithCriteria' in root) {
+        out = out.concat(root.findAllWithCriteria({ types: ['TEXT'] }));
+      }
+    }
+    return out;
+  }
+
+  async function collectTexts(scope, excludePageIds) {
+    var res = [];
+    if (scope === 'selection') {
+      var sel = figma.currentPage.selection;
+      var nodes = collectFrom(sel);
+      for (var i = 0; i < nodes.length; i++) {
+        res.push({ node: nodes[i], pageId: figma.currentPage.id, pageName: figma.currentPage.name });
+      }
+      return res;
+    }
+    var exclude = {};
+    (excludePageIds || []).forEach(function (id) { exclude[id] = true; });
+    var pages = scope === 'page'
+      ? [figma.currentPage]
+      : figma.root.children.filter(function (c) { return c.type === 'PAGE' && !exclude[c.id]; });
+
+    for (var p = 0; p < pages.length; p++) {
+      if (scanCancelled) return res;
+      var page = pages[p];
+      figma.ui.postMessage({ type: 'scan-collect', pageName: page.name, current: p + 1, total: pages.length });
+      if (page !== figma.currentPage) await page.loadAsync();
+      var found = page.findAllWithCriteria({ types: ['TEXT'] });
+      for (var k = 0; k < found.length; k++) {
+        res.push({ node: found[k], pageId: page.id, pageName: page.name });
+      }
+      await pause();
+    }
+    return res;
+  }
+
+  /* ——— сканирование ——— */
+
+  // Единый разбор одного слоя. Им пользуются и сканирование, и пересчёт после правки:
+  // если развести эти два пути, после исправления в списке всплывут находки,
+  // отобранные по другому принципу.
+  async function analyzeNode(node, chars) {
+    var unchecked = uncheckedReason(node);
+    if (unchecked) return { status: 'unchecked', reason: unchecked, edits: [], truncated: false };
+
+    var edits = analyze(chars, rules);
+    if (!edits.length) return { status: 'fix', reason: '', edits: [], truncated: false };
+
+    var canWrap = node.textAutoResize !== 'WIDTH_AND_HEIGHT' || chars.indexOf('\n') !== -1;
+    var truncated = false;
+    if (!canWrap) {
+      // В одну строку текст не разложится — висеть нечему. Лишние пробелы остаются дефектом.
+      edits = edits.filter(function (e) { return e.rule === 'space'; });
+    } else {
+      var lay = await layoutLines(node, chars);
+      if (!lay.ok) return { status: 'unchecked', reason: lay.why, edits: [], truncated: false };
+      edits = keepVisible(edits, lay.lines);
+      truncated = !!lay.truncated;
+    }
+    var reason = edits.length ? blockedReason(node) : '';
+    return {
+      status: reason ? 'blocked' : 'fix', reason: reason,
+      edits: edits, truncated: truncated
+    };
+  }
+
+  // Слой, раскладку которого проверить не удалось. Одна строка на слой: находки внутри
+  // не разбираем, потому что без надёжной раскладки любая из них была бы догадкой.
+  function uncheckedFinding(node, chars, meta, rule) {
+    var head = chars.length > 60 ? chars.slice(0, 60) + '…' : chars;
+    return {
+      id: node.id + '#' + (rule || 'nofont'),
+      nodeId: node.id,
+      rule: rule || 'nofont',
+      at: 0, len: 0, put: '', was: '',
+      snippet: { left: head, mid: '', put: '', right: '' },
+      note: '',
+      status: 'unchecked',
+      reason: meta.reason
+    };
+  }
+
+  function makeFinding(node, chars, e, meta) {
+    return {
+      id: node.id + '#' + e.rule + '#' + e.at,
+      nodeId: node.id,
+      rule: e.rule,
+      at: e.at, len: e.len, put: e.put,
+      was: e.was,
+      snippet: snippet(chars, e),
+      note: e.note || '',
+      status: meta.status,
+      reason: meta.reason
+    };
+  }
+
+  async function runScan(scope, excludePageIds) {
+    findings.clear(); nodeMeta.clear(); tracked = new Set();
+    var texts = await collectTexts(scope, excludePageIds);
+    if (scanCancelled) return null;
+    var total = texts.length, done = 0;
+
+    for (var i = 0; i < texts.length; i++) {
+      if (scanCancelled) return null;
+      done++;
+      // Разбор синхронный, поэтому без этой паузы окно плагина замирает
+      // и кнопка «Отменить» не успевает сработать.
+      // Раз в 10 слоёв, а не в 100: с чтением раскладки проверка идёт медленнее,
+      // и на редком шаге счётчик замирал — выглядело так, будто плагин повис.
+      if (done % 10 === 0 || done === total) {
+        figma.ui.postMessage({ type: 'scan-progress', current: done, total: total, pageName: texts[i].pageName });
+        await pause();
+      }
+      var node = texts[i].node;
+      var chars;
+      try { chars = node.characters; } catch (e) { continue; }
+
+      // Скрытый слой — это обычно другое состояние экрана, и его текст поедет в продукт.
+      // Проверить его нельзя: у невидимого текста нет переносов. Поэтому не пропускаем
+      // молча, а показываем в «Не проверено» — но только если в тексте есть кандидат,
+      // иначе чистые скрытые слои шумели бы без пользы.
+      if (!node.visible || !visibleChain(node)) {
+        if (!scanHidden) continue;
+        if (!analyze(chars, rules).length) continue;
+        var hmeta = {
+          pageId: texts[i].pageId, pageName: texts[i].pageName, screen: screenOf(node),
+          status: 'unchecked', reason: '', name: node.name
+        };
+        nodeMeta.set(node.id, hmeta);
+        findings.set(node.id + '#hidden', uncheckedFinding(node, chars, hmeta, 'hidden'));
+        continue;
+      }
+
+      var res = await analyzeNode(node, chars);
+      if (res.status !== 'unchecked' && !res.edits.length) continue;
+
+      var meta = {
+        pageId: texts[i].pageId, pageName: texts[i].pageName, screen: screenOf(node),
+        status: res.status, reason: res.reason, name: node.name, truncated: res.truncated
+      };
+      nodeMeta.set(node.id, meta);
+
+      if (res.status === 'unchecked') {
+        findings.set(node.id + '#nofont', uncheckedFinding(node, chars, meta, 'nofont'));
+        continue;
+      }
+      for (var e2 = 0; e2 < res.edits.length; e2++) {
+        var f = makeFinding(node, chars, res.edits[e2], meta);
+        findings.set(f.id, f);
+      }
+      tracked.add(node.id);
+    }
+    return { total: total };
+  }
+
+  /* ——— группировка для интерфейса ——— */
+
+  function itemOf(f) {
+    var meta = nodeMeta.get(f.nodeId) || {};
+    return {
+      id: f.id, nodeId: f.nodeId, rule: f.rule, status: f.status,
+      snippet: f.snippet, note: f.note,
+      screen: meta.screen || '', pageId: meta.pageId, pageName: meta.pageName,
+      layer: meta.name || '', reason: f.reason
+    };
+  }
+
+  function buildGroups() {
+    var map = new Map();
+    findings.forEach(function (f) {
+      var key = f.rule + '::' + f.status;
+      if (!map.has(key)) map.set(key, { key: key, rule: f.rule, status: f.status, items: [] });
+      map.get(key).items.push(itemOf(f));
+    });
+    var groups = Array.from(map.values());
+    groups.sort(function (a, b) {
+      var s = (STATUS_ORDER[a.status] || 0) - (STATUS_ORDER[b.status] || 0);
+      if (s !== 0) return s;
+      return RULE_ORDER[a.rule] - RULE_ORDER[b.rule];
+    });
+    return groups;
+  }
+
+  function counts() {
+    var c = { fix: 0, blocked: 0 };
+    findings.forEach(function (f) { c[f.status] = (c[f.status] || 0) + 1; });
+    return c;
+  }
+
+  function postResults(extra) {
+    var payload = { type: 'results', groups: buildGroups(), counts: counts() };
+    if (extra) Object.keys(extra).forEach(function (k) { payload[k] = extra[k]; });
+    figma.ui.postMessage(payload);
+  }
+
+  /* ——— правка ——— */
+
+  async function loadFonts(node) {
+    var seen = {};
+    var segs = node.getStyledTextSegments(['fontName']);
+    if (!segs.length && node.fontName && node.fontName !== figma.mixed) {
+      await figma.loadFontAsync(node.fontName);
+      return;
+    }
+    for (var i = 0; i < segs.length; i++) {
+      var f = segs[i].fontName;
+      var k = f.family + '|' + f.style;
+      if (seen[k]) continue;
+      seen[k] = true;
+      await figma.loadFontAsync(f);
+    }
+  }
+
+  // Правим точечно: удалить символ и вставить неразрывный. Через `node.characters = …`
+  // делать нельзя — присваивание всей строки схлопывает смешанное форматирование
+  // (жирный фрагмент, ссылка, другой цвет) к стилю первого символа.
+  function writeInPlace(node, edits) {
+    var sorted = edits.slice().sort(function (a, b) { return a.at - b.at; });
+    for (var i = sorted.length - 1; i >= 0; i--) {
+      var e = sorted[i];
+      if (e.len > 0) node.deleteCharacters(e.at, e.at + e.len);
+      if (e.put) node.insertCharacters(e.at, e.put, e.at === 0 ? 'AFTER' : 'BEFORE');
+    }
+  }
+
+  // Не во всех окружениях commitUndo доступен. Если его нет, шаг отмены просто не делится —
+  // это не повод валить уже применённую правку.
+  function commitUndoSafe() {
+    try { figma.commitUndo(); } catch (e) { }
+  }
+
+  // Сколько в слое стилевых сегментов. Один — значит текст однородный и его можно
+  // писать целиком; больше — внутри есть цветные ссылки, жирные фрагменты, и любая
+  // запись всей строки их схлопнет.
+  function styleSegments(node) {
+    try {
+      return node.getStyledTextSegments(['fills', 'fontName', 'textDecoration', 'hyperlink']).length;
+    } catch (e) { return 2; }
+  }
+
+  // Текст может быть не своим, а значением текстового свойства компонента.
+  // Тогда пишем в свойство ближайшего инстанса, который им владеет.
+  function writeViaProperty(node, key, newText) {
+    var p = node.parent;
+    while (p && p.type !== 'PAGE') {
+      if (p.type === 'INSTANCE') {
+        var props = null;
+        try { props = p.componentProperties; } catch (e) { }
+        if (props && Object.prototype.hasOwnProperty.call(props, key)) {
+          var patch = {}; patch[key] = newText;
+          p.setProperties(patch);
+          return true;
+        }
+      }
+      p = p.parent;
+    }
+    return false;
+  }
+
+  async function applyFix(ids) {
+    var byNode = new Map();
+    for (var i = 0; i < ids.length; i++) {
+      var f = findings.get(ids[i]);
+      if (!f || f.status !== 'fix') continue;
+      if (!byNode.has(f.nodeId)) byNode.set(f.nodeId, []);
+      byNode.get(f.nodeId).push(f);
+    }
+
+    var nodeIds = Array.from(byNode.keys());
+    var applied = 0, failed = [], resized = [], touched = [];
+    writing = true;
+
+    for (var n = 0; n < nodeIds.length; n++) {
+      if (fixCancelled) break;
+      var nodeId = nodeIds[n];
+      figma.ui.postMessage({ type: 'fix-progress', current: n + 1, total: nodeIds.length });
+      var meta = nodeMeta.get(nodeId) || {};
+      var node = await figma.getNodeByIdAsync(nodeId);
+      if (!node || node.type !== 'TEXT') {
+        failed.push({ nodeId: nodeId, screen: meta.screen || '', reason: 'слой не найден' });
+        continue;
+      }
+      var before = node.characters;
+      var list = byNode.get(nodeId).filter(function (f) {
+        return before.slice(f.at, f.at + f.len) === f.was;
+      });
+      if (!list.length) {
+        failed.push({ nodeId: nodeId, screen: meta.screen || '', reason: 'текст изменился — проверьте заново' });
+        continue;
+      }
+      var w = node.width, h = node.height;
+      try {
+        // Значение свойства — плоская строка, поэтому запись через свойство схлопывает
+        // пораздельные стили. В тексте согласий это выглядело как сброс цвета у ссылок.
+        // Точечная правка на таком слое проходит и цвета сохраняет — проверено на живом
+        // инстансе, — поэтому свойство используем только для однородного текста, где
+        // терять нечего: так мы не плодим текстовый оверрайд без нужды.
+        var ref = textPropRef(node);
+        if (ref && styleSegments(node) === 1) {
+          if (!writeViaProperty(node, ref, applyEdits(before, list))) {
+            await loadFonts(node);
+            writeInPlace(node, list);
+          }
+        } else {
+          await loadFonts(node);
+          writeInPlace(node, list);
+        }
+        undoText.set(nodeId, before);
+        undoEdits.set(nodeId, inverseEdits(list));
+        applied += list.length;
+        touched.push(nodeId);
+        if (Math.abs(node.width - w) > 0.5 || Math.abs(node.height - h) > 0.5) {
+          resized.push({
+            nodeId: nodeId, screen: meta.screen || '', layer: node.name,
+            dw: Math.round(node.width - w), dh: Math.round(node.height - h)
+          });
+        }
+      } catch (err) {
+        failed.push({
+          nodeId: nodeId, screen: meta.screen || '',
+          reason: (err && err.message) ? err.message : String(err)
+        });
+      }
+      if (n % 10 === 9) await pause();
+    }
+
+    writing = false;
+    commitUndoSafe();
+    await refreshNodes(touched, true);
+    return { applied: applied, failed: failed, resized: resized, cancelled: fixCancelled };
+  }
+
+  async function revert(nodeId) {
+    var before = undoText.get(nodeId);
+    if (before == null) return false;
+    var node = await figma.getNodeByIdAsync(nodeId);
+    if (!node || node.type !== 'TEXT') return false;
+    writing = true;
+    try {
+      // Откатываем тем же способом, которым правили. Если правка была точечной,
+      // возврат целой строкой схлопнул бы стили ровно так же, как это делала запись
+      // в свойство, — поэтому сохранённые обратные правки идут первыми.
+      var inv = undoEdits.get(nodeId);
+      var ref = textPropRef(node);
+      if (inv && inv.length) {
+        await loadFonts(node);
+        writeInPlace(node, inv);
+      } else if (ref) {
+        writeViaProperty(node, ref, before);
+      } else {
+        await loadFonts(node);
+        node.deleteCharacters(0, node.characters.length);
+        node.insertCharacters(0, before);
+      }
+      undoText.delete(nodeId);
+      undoEdits.delete(nodeId);
+    } finally {
+      writing = false;
+      commitUndoSafe();
+    }
+    await refreshNodes([nodeId], true);
+    return true;
+  }
+
+  /* ——— пересчёт отдельных слоёв ——— */
+
+  // После любой правки индексы остальных находок в этом же слое съезжают,
+  // поэтому слой всегда разбираем заново, а не пересчитываем смещения руками.
+  async function refreshNodes(nodeIds, silent) {
+    var updates = [];
+    for (var i = 0; i < nodeIds.length; i++) {
+      var id = nodeIds[i];
+      findings.forEach(function (f, key) { if (f.nodeId === id) findings.delete(key); });
+      var node = await figma.getNodeByIdAsync(id);
+      if (!node || node.type !== 'TEXT' || !node.visible || !visibleChain(node)) {
+        tracked.delete(id);
+        updates.push({ nodeId: id, items: [] });
+        continue;
+      }
+      var chars;
+      try { chars = node.characters; } catch (e) { chars = ''; }
+      var res = await analyzeNode(node, chars);
+      var meta = nodeMeta.get(id) || {};
+      meta.status = res.status;
+      meta.reason = res.reason;
+      meta.truncated = res.truncated;
+      meta.name = node.name;
+      if (!meta.screen) meta.screen = screenOf(node);
+      if (!meta.pageId) { meta.pageId = figma.currentPage.id; meta.pageName = figma.currentPage.name; }
+      nodeMeta.set(id, meta);
+      var items = [];
+      if (res.status === 'unchecked') {
+        var fu = uncheckedFinding(node, chars, meta, 'nofont');
+        findings.set(fu.id, fu);
+        items.push(itemOf(fu));
+      }
+      for (var e = 0; e < res.edits.length; e++) {
+        var f2 = makeFinding(node, chars, res.edits[e], meta);
+        findings.set(f2.id, f2);
+        items.push(itemOf(f2));
+      }
+      if (!items.length) tracked.delete(id);
+      updates.push({ nodeId: id, items: items });
+    }
+    if (!silent) {
+      figma.ui.postMessage({ type: 'nodes-updated', updates: updates, counts: counts() });
+    }
+    return updates;
+  }
+
+  /* ——— слежение за изменениями текста на канвасе ——— */
+
+  var pendingRefresh = {}, refreshTimer = null;
+
+  function scheduleRefresh(id) {
+    pendingRefresh[id] = true;
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(async function () {
+      refreshTimer = null;
+      var ids = Object.keys(pendingRefresh);
+      pendingRefresh = {};
+      if (!ids.length) return;
+      var updates = await refreshNodes(ids, true);
+      figma.ui.postMessage({ type: 'nodes-updated', updates: updates, counts: counts() });
+    }, 300);
+  }
+
+  function onNodeChange(ev) {
+    if (writing || !tracked.size) return;
+    for (var i = 0; i < ev.nodeChanges.length; i++) {
+      var ch = ev.nodeChanges[i];
+      if (tracked.has(ch.id)) scheduleRefresh(ch.id);
+    }
+  }
+
+  // Слушатель живёт на конкретной странице, а не на документе. Если подписаться
+  // только на старте, после перехода на другую страницу список тихо перестанет
+  // сам обновляться — поэтому подписываемся заново на каждой странице.
+  function attachNodeChange() {
+    var page = figma.currentPage;
+    if (attachedPages.has(page.id)) return;
+    try { page.on('nodechange', onNodeChange); attachedPages.add(page.id); } catch (e) { }
+  }
+
+  /* ——— сообщения из интерфейса ——— */
+
+  figma.ui.onmessage = async function (msg) {
+    if (msg.type === 'resize') {
+      figma.ui.resize(UI_W, Math.max(160, Math.min(900, Math.round(msg.height))));
+      return;
+    }
+    if (msg.type === 'cancel-scan') { scanCancelled = true; return; }
+    if (msg.type === 'cancel-fix') { fixCancelled = true; return; }
+
+    if (msg.type === 'scan') {
+      rules = msg.rules || rules;
+      scanHidden = !!msg.scanHidden;
+      scanCancelled = false;
+      figma.ui.postMessage({ type: 'scan-start' });
+      try {
+        var res = await runScan(msg.scope, msg.excludePageIds);
+        if (scanCancelled || !res) {
+          figma.ui.postMessage({ type: 'scan-cancelled' });
+          figma.notify('Проверка отменена');
+          return;
+        }
+        attachNodeChange();
+        var c = counts();
+        postResults({ scanned: res.total });
+        if (!c.fix && !c.blocked) figma.notify('Чисто — ни одной находки');
+        else figma.notify('Нашёл ' + (c.fix + c.blocked) + ' ' + plural(c.fix + c.blocked, 'находку', 'находки', 'находок'));
+      } catch (e) {
+        figma.ui.postMessage({ type: 'scan-error', message: (e && e.message) ? e.message : String(e) });
+        figma.notify('Проверка сломалась: ' + ((e && e.message) ? e.message : String(e)), { error: true });
+      }
+      return;
+    }
+
+    if (msg.type === 'fix') {
+      fixCancelled = false;
+      figma.ui.postMessage({ type: 'fix-start', total: msg.ids.length });
+      try {
+        var r = await applyFix(msg.ids);
+        postResults({
+          fixed: r.applied, failed: r.failed, resized: r.resized, fixCancelled: r.cancelled
+        });
+        var parts = [];
+        if (r.applied) parts.push('Исправил ' + r.applied);
+        if (r.resized.length) parts.push('у ' + r.resized.length + ' ' + plural(r.resized.length, 'слоя', 'слоёв', 'слоёв') + ' изменился размер');
+        if (r.failed.length) parts.push('не смог ' + r.failed.length);
+        figma.notify(parts.length ? parts.join(', ') : 'Нечего исправлять');
+      } catch (e) {
+        figma.ui.postMessage({ type: 'fix-error', message: (e && e.message) ? e.message : String(e) });
+        figma.notify('Правка сломалась: ' + ((e && e.message) ? e.message : String(e)), { error: true });
+      }
+      return;
+    }
+
+    if (msg.type === 'revert') {
+      var ok = await revert(msg.nodeId);
+      // Сообщаем, какой слой вернули: интерфейс снимет его строку из предупреждений,
+      // иначе она продолжает предлагать «вернуть» для уже возвращённого слоя.
+      postResults({ reverted: ok ? msg.nodeId : null });
+      figma.notify(ok ? 'Вернул как было' : 'Вернуть не получилось');
+      return;
+    }
+
+    if (msg.type === 'focus') {
+      var f = findings.get(msg.id);
+      if (!f) return;
+      var meta2 = nodeMeta.get(f.nodeId) || {};
+      if (meta2.pageId && meta2.pageId !== figma.currentPage.id) {
+        var page = await figma.getNodeByIdAsync(meta2.pageId);
+        if (page && page.type === 'PAGE') await figma.setCurrentPageAsync(page);
+      }
+      var node = await figma.getNodeByIdAsync(f.nodeId);
+      if (!node || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+        figma.notify('Слой не найден — возможно, его удалили', { error: true });
+        return;
+      }
+      figma.currentPage.selection = [node];
+      figma.viewport.scrollAndZoomIntoView([node]);
+      // Мелкий текст иначе раздувается на весь экран и теряется контекст.
+      if (figma.viewport.zoom > 2) figma.viewport.zoom = 2;
+      return;
+    }
+  };
+
+  function plural(n, one, few, many) {
+    var m10 = n % 10, m100 = n % 100;
+    if (m10 === 1 && m100 !== 11) return one;
+    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+    return many;
+  }
+
+  postSelection();
+  postPages();
+  attachNodeChange();
+  figma.on('selectionchange', postSelection);
+  figma.on('currentpagechange', function () { attachNodeChange(); postSelection(); });
+}
