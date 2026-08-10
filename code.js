@@ -576,6 +576,7 @@ if (typeof figma !== 'undefined') {
       rule: e.rule,
       at: e.at, len: e.len, put: e.put,
       was: e.was,
+      word: e.word || '', next: e.next || '',
       snippet: snippet(chars, e),
       note: e.note || '',
       status: meta.status,
@@ -613,7 +614,7 @@ if (typeof figma !== 'undefined') {
         if (!analyze(chars, rules).length) continue;
         var hmeta = {
           pageId: texts[i].pageId, pageName: texts[i].pageName, screen: screenOf(node),
-          status: 'unchecked', reason: '', name: node.name
+          status: 'unchecked', reason: '', name: node.name, head: chars.slice(0, 80)
         };
         nodeMeta.set(node.id, hmeta);
         findings.set(node.id + '#hidden', uncheckedFinding(node, chars, hmeta, 'hidden'));
@@ -625,7 +626,8 @@ if (typeof figma !== 'undefined') {
 
       var meta = {
         pageId: texts[i].pageId, pageName: texts[i].pageName, screen: screenOf(node),
-        status: res.status, reason: res.reason, name: node.name, truncated: res.truncated
+        status: res.status, reason: res.reason, name: node.name, truncated: res.truncated,
+        head: chars.slice(0, 80)
       };
       nodeMeta.set(node.id, meta);
 
@@ -650,7 +652,8 @@ if (typeof figma !== 'undefined') {
       id: f.id, nodeId: f.nodeId, rule: f.rule, status: f.status,
       snippet: f.snippet, note: f.note,
       screen: meta.screen || '', pageId: meta.pageId, pageName: meta.pageName,
-      layer: meta.name || '', reason: f.reason
+      layer: meta.name || '', reason: f.reason,
+      word: f.word || '', next: f.next || '', head: meta.head || ''
     };
   }
 
@@ -874,6 +877,7 @@ if (typeof figma !== 'undefined') {
       meta.reason = res.reason;
       meta.truncated = res.truncated;
       meta.name = node.name;
+      meta.head = chars.slice(0, 80);
       if (!meta.screen) meta.screen = screenOf(node);
       if (!meta.pageId) { meta.pageId = figma.currentPage.id; meta.pageName = figma.currentPage.name; }
       nodeMeta.set(id, meta);

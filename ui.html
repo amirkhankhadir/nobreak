@@ -209,6 +209,28 @@
 
 
     .rows { display: none; }
+    /* Строка слоя. Появляется только когда в слое больше одной находки или один и тот
+       же текст лежит на нескольких экранах: иначе находка рисуется обычной строкой,
+       и короткие тексты не получают лишнего уровня. */
+    .lrow {
+      position: relative; display: flex; align-items: center; gap: 6px;
+      padding: 6px 12px 6px 20px; min-height: 26px; cursor: pointer;
+      color: var(--figma-color-text, #333);
+    }
+    .lrow:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
+    .lrow .l-chev {
+      width: 6px; height: 6px; flex-shrink: 0;
+      border-right: 1.5px solid var(--figma-color-text-secondary, #888);
+      border-bottom: 1.5px solid var(--figma-color-text-secondary, #888);
+      transform: rotate(-45deg); transition: transform 0.15s;
+    }
+    .lrow .l-chev.open { transform: rotate(45deg); }
+    .lrow .l-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+    .lrow .l-count, .lrow .l-screens {
+      flex-shrink: 0; font-size: 11px; color: var(--figma-color-text-secondary, #888);
+    }
+    .lrow:hover .row-fix { display: inline-block; }
+    .row.nested { padding-left: 34px; }
     /* position нужен кнопке «Исправить»: она лежит поверх строки, а не в потоке.
        min-height держит одинаковую высоту всех строк, с кнопкой и без неё. */
     .row {
@@ -217,6 +239,10 @@
       min-height: 26px; cursor: pointer; color: var(--figma-color-text, #333);
     }
     .row:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
+    .lrow.active, .lrow.active:hover {
+      background: var(--figma-color-bg-selected, rgba(13,153,255,0.18));
+      border-left: 3px solid var(--figma-color-border-selected, #0d99ff); padding-left: 17px;
+    }
     .row.active, .row.active:hover {
       background: var(--figma-color-bg-selected, rgba(13,153,255,0.18));
       border-left: 3px solid var(--figma-color-border-selected, #0d99ff); padding-left: 23px;
@@ -381,7 +407,7 @@
       rules: { hang: true, hangLong: true, dash: true, num: true, space: true },
       rulesDirty: false,
       groups: null, counts: { fix: 0, blocked: 0, unchecked: 0 },
-      expanded: {},
+      expanded: {}, expandedLayer: {},
       byPage: false,
       phase: 'idle',            // idle | scanning | fixing | results
       lastClicked: null,
@@ -653,6 +679,28 @@
              '<span class="sn-r">' + esc(sn.right) + '</span></span>';
     }
 
+    // В длинном тексте окна вокруг пробела почти неотличимы друг от друга, поэтому
+    // в строке показываем сами склеиваемые слова. Слова есть только у висячих слов;
+    // у чисел, тире и пробелов их нет, там остаётся окно.
+    function pairHtml(it) {
+      if (!it.word || !it.next) return snippetHtml(it.snippet);
+      var sn = it.snippet;
+      var chip = sn.put === ''
+        ? '<span class="chip del" title="убрать">·</span>'
+        : (sn.mid === '' ? '<span class="chip ins" title="поставить неразрывный пробел">+</span>'
+                         : '<span class="chip" title="обычный пробел → неразрывный">·</span>');
+      return '<span class="sn"><span class="sn-l">' + esc(it.word) + '</span>' + chip +
+             '<span class="sn-r">' + esc(it.next) + '</span></span>';
+    }
+
+    // Заголовок для строки слоя: первые слова текста. Имя слоя не годится — в макетах
+    // он часто называется просто «text».
+    function headTitle(head) {
+      var t = String(head || '').replace(/\s+/g, ' ').trim();
+      if (!t) return 'без текста';
+      return t.length > 34 ? t.slice(0, 34) + '…' : t;
+    }
+
     function renderGroup(container, g, items) {
       var group = document.createElement('div');
       group.className = 'group';
@@ -689,29 +737,107 @@
       rows.className = 'rows';
       rows.style.display = isOpen ? 'block' : 'none';
 
-      items.forEach(function (it) {
+      function makeRow(it, nested) {
         var row = document.createElement('div');
-        row.className = 'row' + (g.status === 'fix' ? '' : ' blocked');
+        row.className = 'row' + (g.status === 'fix' ? '' : ' blocked') + (nested ? ' nested' : '');
         row.setAttribute('data-id', it.id);
         row.setAttribute('data-node', it.nodeId);
-        row.title = 'Показать на канвасе';
+        row.title = 'Показать на канвасе';
         var right = g.status === 'blocked'
           ? esc(it.reason || '')
           : esc(it.note || it.screen || '');
-        row.innerHTML = snippetHtml(it.snippet) +
+        row.innerHTML = pairHtml(it) +
           '<span class="row-meta" title="' + esc((it.screen || '') + (it.note ? ' · ' + it.note : '')) + '">' + right + '</span>';
         if (g.status === 'fix') {
-          var b = document.createElement('button');
-          b.className = 'row-fix';
-          b.textContent = 'Исправить';
-          b.addEventListener('click', function (e) { e.stopPropagation(); doFix([it.id]); });
-          row.appendChild(b);
+          var fb = document.createElement('button');
+          fb.className = 'row-fix';
+          fb.textContent = 'Исправить';
+          fb.addEventListener('click', function (e) { e.stopPropagation(); doFix([it.id]); });
+          row.appendChild(fb);
         }
         row.addEventListener('click', function () {
           st.lastClicked = it.id;
           send({ type: 'focus', id: it.id });
         });
-        rows.appendChild(row);
+        return row;
+      }
+
+      // Находки складываем по слоям, а слои — по тексту: в длинном абзаце находок бывает
+      // шесть, а сам абзац лежит на нескольких экранах. Без группировки список
+      // превращается в десятки почти одинаковых строк, а выделение слоя подсвечивает
+      // сразу полдесятка из них.
+      var perNode = new Map();
+      items.forEach(function (it) {
+        if (!perNode.has(it.nodeId)) perNode.set(it.nodeId, { head: it.head || '', items: [] });
+        perNode.get(it.nodeId).items.push(it);
+      });
+      var perText = new Map();
+      perNode.forEach(function (node, nodeId) {
+        var key = node.head || nodeId;
+        if (!perText.has(key)) perText.set(key, { head: node.head, nodes: [], total: 0 });
+        var cl = perText.get(key);
+        cl.nodes.push(node);
+        cl.total += node.items.length;
+      });
+      var clusters = Array.from(perText.values());
+      clusters.sort(function (x, y) { return y.total - x.total; });
+
+      clusters.forEach(function (cl, ci) {
+        // Один слой с одной находкой — обычная строка, без лишнего уровня.
+        if (cl.total === 1 && cl.nodes.length === 1) {
+          rows.appendChild(makeRow(cl.nodes[0].items[0], false));
+          return;
+        }
+
+        var lkey = openKey + '::' + ci;
+        var lopen = st.expandedLayer[lkey] === true;
+        var lrow = document.createElement('div');
+        lrow.className = 'lrow';
+        // Пока слой свёрнут, его строки скрыты, и подсвечивать при выделении нечего.
+        // Поэтому строка слоя знает все свои ноды и загорается сама.
+        lrow.setAttribute('data-nodes', cl.nodes.map(function (node) {
+          return node.items.length ? node.items[0].nodeId : '';
+        }).join(' '));
+        lrow.innerHTML =
+          '<span class="l-chev' + (lopen ? ' open' : '') + '"></span>' +
+          '<span class="l-name" title="' + esc(cl.head || '') + '">' + esc(headTitle(cl.head)) + '</span>' +
+          '<span class="l-count">' + cl.total + '</span>' +
+          (cl.nodes.length > 1
+            ? '<span class="l-screens">×' + cl.nodes.length + ' ' +
+              plural(cl.nodes.length, 'экран', 'экрана', 'экранов') + '</span>'
+            : '');
+
+        var inner = document.createElement('div');
+        inner.style.display = lopen ? 'block' : 'none';
+        cl.nodes.forEach(function (node) {
+          node.items.forEach(function (it) { inner.appendChild(makeRow(it, true)); });
+        });
+
+        if (g.status === 'fix') {
+          var lfix = document.createElement('button');
+          lfix.className = 'row-fix';
+          lfix.textContent = 'Исправить все';
+          lfix.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var ids = [];
+            cl.nodes.forEach(function (node) {
+              node.items.forEach(function (it) { ids.push(it.id); });
+            });
+            doFix(ids);
+          });
+          lrow.appendChild(lfix);
+        }
+
+        lrow.addEventListener('click', function () {
+          var now = !(st.expandedLayer[lkey] === true);
+          st.expandedLayer[lkey] = now;
+          lrow.querySelector('.l-chev').classList.toggle('open', now);
+          inner.style.display = now ? 'block' : 'none';
+          requestAnimationFrame(reportHeight);
+        });
+
+        rows.appendChild(lrow);
+        rows.appendChild(inner);
       });
 
       head.addEventListener('click', function () {
@@ -892,6 +1018,16 @@
         rows[i].classList.toggle('active', on);
         if (on && !target) target = rows[i];
         if (on && rows[i].getAttribute('data-id') === st.lastClicked) target = rows[i];
+      }
+      // Строки слоёв: загораются, если выделена любая из их нод. Иначе на свёрнутом
+      // слое выделение на канвасе не отражалось бы в списке вообще.
+      var lrows = el('results').querySelectorAll('.lrow');
+      for (var j = 0; j < lrows.length; j++) {
+        var ids = (lrows[j].getAttribute('data-nodes') || '').split(' ');
+        var hit = false;
+        for (var k = 0; k < ids.length; k++) { if (st.selIds[ids[k]]) { hit = true; break; } }
+        lrows[j].classList.toggle('active', hit);
+        if (hit && !target) target = lrows[j];
       }
       if (target && target.scrollIntoView) target.scrollIntoView({ block: 'nearest' });
     }
