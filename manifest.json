@@ -5,6 +5,7 @@
   "main": "code.js",
   "editorType": ["figma"],
   "ui": "ui.html",
+  "documentAccess": "dynamic-page",
   "networkAccess": {
     "allowedDomains": ["none"],
     "reasoning": "Плагин работает только с текстом открытого файла и никуда не обращается."
