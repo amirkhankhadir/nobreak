@@ -914,7 +914,7 @@ if (typeof figma !== 'undefined') {
       var meta = nodeMeta.get(nodeId) || {};
       var node = await figma.getNodeByIdAsync(nodeId);
       if (!node || node.type !== 'TEXT') {
-        failed.push({ nodeId: nodeId, screen: meta.screen || '', reason: 'слой не найден' });
+        failed.push({ nodeId: nodeId, screen: meta.screen || '', head: meta.head || '', reason: 'слой не найден' });
         continue;
       }
       var before = node.characters;
@@ -924,7 +924,7 @@ if (typeof figma !== 'undefined') {
         return before.slice(f.at, f.at + f.len) === f.was;
       });
       if (!asked.length) {
-        failed.push({ nodeId: nodeId, screen: meta.screen || '', reason: 'текст изменился — проверьте заново' });
+        failed.push({ nodeId: nodeId, screen: meta.screen || '', head: meta.head || '', reason: 'текст изменился — проверьте заново' });
         continue;
       }
       // Сколько правок какого вида просили. Больше запрошенного не чиним: находка,
@@ -977,6 +977,9 @@ if (typeof figma !== 'undefined') {
           if (Math.abs(node.width - w) > 0.5 || Math.abs(node.height - h) > 0.5) {
             resized.push({
               nodeId: nodeId, screen: meta.screen || '', layer: node.name,
+              // Начало текста, а не имя слоя: в макетах слой обычно называется «text»,
+              // и по такому имени не понять, что именно вернётся.
+              head: meta.head || '',
               dw: Math.round(node.width - w), dh: Math.round(node.height - h)
             });
           }
@@ -986,7 +989,7 @@ if (typeof figma !== 'undefined') {
         dropped += asked.length - madeHere;
       } catch (err) {
         failed.push({
-          nodeId: nodeId, screen: meta.screen || '',
+          nodeId: nodeId, screen: meta.screen || '', head: meta.head || '',
           reason: (err && err.message) ? err.message : String(err)
         });
       }

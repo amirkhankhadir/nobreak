@@ -910,11 +910,16 @@
         var d = document.createElement('div');
         d.className = 'alert' + (kind === 'bad' ? ' bad' : '');
         var lines = list.slice(0, 6).map(function (x) {
-          var name = (x.screen ? x.screen + ' · ' : '') + (x.layer || '');
+          // Опознаём слой началом текста, как в списке находок. Имя слоя не годится —
+          // в макетах это сплошь «text»; имя экрана тоже: оно у всех строк одинаковое
+          // и, стоя первым, съедало всю ширину, а различающая часть уходила в многоточие.
+          // Экран и имя слоя остаются в подсказке.
+          var name = headTitle(x.head) !== 'без текста' ? headTitle(x.head) : (x.layer || 'слой');
+          var full = [x.screen, x.layer, x.head].filter(Boolean).join(' · ');
           var tail = withRevert
             ? (x.dh ? (x.dh > 0 ? 'выше на ' + x.dh + ' px' : 'ниже на ' + (-x.dh) + ' px') : (x.dw > 0 ? 'шире на ' + x.dw + ' px' : 'уже на ' + (-x.dw) + ' px'))
             : x.reason;
-          return '<div class="alert-line"><span class="al-name" title="' + esc(name) + '">' + esc(name || 'слой') + '</span>' +
+          return '<div class="alert-line"><span class="al-name" title="' + esc(full || name) + '">' + esc(name) + '</span>' +
             '<span>' + esc(tail) + '</span>' +
             (withRevert ? '<span class="al-act" data-revert="' + esc(x.nodeId) + '">вернуть</span>' : '') + '</div>';
         }).join('');
