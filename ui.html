@@ -726,7 +726,9 @@
       group.className = 'group';
       var meta = RULE_BY_ID[g.rule] || { label: g.rule };
       // В шапке группы места мало: там короткая подпись, полная — в подсказке.
-      var title = meta.short || meta.label;
+      // У заблокированных заголовок задаёт не правило, а причина — см. buildGroups.
+      var title = g.title || meta.short || meta.label;
+      var fullTitle = g.title || meta.label;
       // У исправимых находок бейджа нет: их большинство, и метка «Исправим» ничего
       // не сообщает — только шумит. Бейдж остаётся там, где он несёт информацию.
       var badge = g.status === 'fix' ? null : BADGE[g.status];
@@ -737,7 +739,7 @@
       head.className = 'g-head';
       head.innerHTML =
         '<span class="chev' + (isOpen ? ' open' : '') + '"></span>' +
-        '<span class="g-name" title="' + esc(meta.label) + '">' + esc(title) + '</span>' +
+        '<span class="g-name" title="' + esc(fullTitle) + '">' + esc(title) + '</span>' +
         (badge ? '<span class="badge badge-' + g.status + '" data-badge="' + g.status + '">' + badge.ic + esc(badge.label) + '</span>' : '') +
         '<span class="g-count">' + items.length + '</span>';
       if (g.status === 'fix') {
@@ -765,17 +767,21 @@
         row.title = 'Показать на канвасе';
         // У «Не проверено» причина у каждой находки своя — их четыре: нет шрифта, слой
         // не экспортируется, в экспорте нет текста, раскладка не сошлась. В названии
-        // группы такое не уместить, поэтому причина идёт в строку, как у «Нельзя».
-        var right = (g.status === 'blocked' || g.status === 'unchecked')
+        // группы такое не уместить, поэтому причина идёт в строку.
+        // У «Нельзя» причина, наоборот, вынесена в заголовок группы — в строке дублировать
+        // её нечего, там полезнее экран.
+        var right = g.status === 'unchecked'
           ? esc(it.reason || it.screen || '')
           : esc(it.note || it.screen || '');
         // Причины длиннее, чем колонка справа, и обрезаются многоточием — поэтому
         // в подсказке они идут первыми, иначе прочитать их негде.
-        var meta = (g.status === 'blocked' || g.status === 'unchecked')
+        // Имя отличается от группового meta намеренно: то — справочник правила,
+        // это — текст подсказки строки. Одинаковые имена в соседних областях путают.
+        var metaTitle = (g.status === 'blocked' || g.status === 'unchecked')
           ? (it.reason ? it.reason + (it.screen ? ' · ' + it.screen : '') : (it.screen || ''))
           : ((it.screen || '') + (it.note ? ' · ' + it.note : ''));
         row.innerHTML = pairHtml(it) +
-          '<span class="row-meta" title="' + esc(meta) + '">' + right + '</span>';
+          '<span class="row-meta" title="' + esc(metaTitle) + '">' + right + '</span>';
         if (g.status === 'fix') {
           var fb = document.createElement('button');
           fb.className = 'row-fix';

@@ -580,8 +580,9 @@ if (typeof figma !== 'undefined') {
   // слоёв прочитать можно, поэтому проверка на реальный перенос работает как обычно.
   function blockedReason(node) {
     try {
+      // Короткая формулировка: она становится ЗАГОЛОВКОМ группы, а не подписью в строке.
       var bv = node.boundVariables;
-      if (bv && bv.characters) return 'текст подставляется из переменной';
+      if (bv && bv.characters) return 'Текст из переменной';
     } catch (e) { }
     return '';
   }
@@ -814,11 +815,26 @@ if (typeof figma !== 'undefined') {
     };
   }
 
+  /**
+   * Заблокированные находки группируем по ПРИЧИНЕ, а не по правилу. Какое правило нашло
+   * висящий предлог внутри текста из переменной — бесполезная деталь: переписать его всё
+   * равно нельзя, важно только почему. Заодно уходят одинаковые заголовки: раньше
+   * «Висячие предлоги» стояли в списке дважды и различались лишь бейджем.
+   *
+   * У непроверенных так уже сделано — «Не смог прочитать» и «Скрытые слои» — там причина
+   * остаётся в строке, потому что под одним заголовком их четыре.
+   */
   function buildGroups() {
     var map = new Map();
     findings.forEach(function (f) {
-      var key = f.rule + '::' + f.status;
-      if (!map.has(key)) map.set(key, { key: key, rule: f.rule, status: f.status, items: [] });
+      var byReason = f.status === 'blocked';
+      var key = byReason ? 'blocked::' + f.reason : f.rule + '::' + f.status;
+      if (!map.has(key)) {
+        map.set(key, {
+          key: key, rule: f.rule, status: f.status,
+          title: byReason ? f.reason : '', items: []
+        });
+      }
       map.get(key).items.push(itemOf(f));
     });
     var groups = Array.from(map.values());
