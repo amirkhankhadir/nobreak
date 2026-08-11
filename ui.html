@@ -884,7 +884,7 @@
       var box = el('alerts');
       box.innerHTML = '';
       var a = st.alerts;
-      if (!a || (!a.fixed && !a.dropped && !a.resized.length && !a.failed.length)) { box.style.display = 'none'; return; }
+      if (!a || (!a.fixed && !a.dropped && !a.appeared && !a.resized.length && !a.failed.length)) { box.style.display = 'none'; return; }
       box.style.display = '';
 
       // Плашки живут до новой проверки или следующей правки, потому что в них есть
@@ -929,17 +929,24 @@
         box.appendChild(d);
       }
 
-      if (a.fixed || a.dropped) {
-        // Внутри слоя правки идут по одной, и после каждой текст перетекает: часть находок
-        // перестаёт висеть сама. Поэтому исправленных бывает меньше, чем строк было
-        // в списке. Молчать об этом нельзя — разница читается как сбой.
+      if (a.fixed || a.dropped || a.appeared) {
+        // Склейка двигает текст, поэтому после правки список меняется в обе стороны:
+        // часть находок перестаёт висеть сама, а часть, наоборот, повисает впервые.
+        // Оба числа надо назвать. Иначе меньшее «исправлено» читается как сбой,
+        // а новые находки в списке — как будто правка не доделалась.
         var body = '<strong>' + (a.fixed ? 'Исправлено ' + a.fixed : 'Править не пришлось') + '</strong>';
+        var tails = [];
         if (a.dropped) {
-          body += ' — ещё ' + a.dropped + ' ' + plural(a.dropped, 'отпала', 'отпали', 'отпало') +
-            ': текст перетёк, висеть стало нечему';
+          tails.push('ещё ' + a.dropped + ' ' + plural(a.dropped, 'отпала', 'отпали', 'отпало') +
+            ': текст перетёк, висеть стало нечему');
         }
+        if (a.appeared) {
+          tails.push('появилось ' + a.appeared + ' ' + plural(a.appeared, 'новая', 'новые', 'новых') +
+            ': текст сместился, и повисло то, что стояло ровно');
+        }
+        if (tails.length) body += ' — ' + tails.join('; ');
         if (a.fixed) {
-          body += a.dropped ? '. Отменить всё сразу — Cmd + Z' : ' — отменить всё сразу можно через Cmd + Z';
+          body += tails.length ? '. Отменить всё сразу — Cmd + Z' : ' — отменить всё сразу можно через Cmd + Z';
         }
         var okBox = document.createElement('div');
         okBox.className = 'alert ok';
@@ -947,7 +954,7 @@
           '<svg class="alert-ic" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
           '<path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
           '<div class="alert-body">' + body + '</div>';
-        withClose(okBox, function () { st.alerts.fixed = 0; st.alerts.dropped = 0; });
+        withClose(okBox, function () { st.alerts.fixed = 0; st.alerts.dropped = 0; st.alerts.appeared = 0; });
         box.appendChild(okBox);
       }
       if (a.resized.length) {
@@ -1165,7 +1172,7 @@
           st.alerts.failed = st.alerts.failed.filter(function (x) { return x.nodeId !== msg.reverted; });
         }
         if (msg.fixed != null || msg.failed || msg.resized) {
-          st.alerts = { fixed: msg.fixed || 0, dropped: msg.dropped || 0, resized: msg.resized || [], failed: msg.failed || [] };
+          st.alerts = { fixed: msg.fixed || 0, dropped: msg.dropped || 0, appeared: msg.appeared || 0, resized: msg.resized || [], failed: msg.failed || [] };
         }
         st.rulesDirty = false;
         renderResults();

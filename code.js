@@ -896,6 +896,15 @@ if (typeof figma !== 'undefined') {
 
     var nodeIds = Array.from(byNode.keys());
     var applied = 0, dropped = 0, failed = [], resized = [], touched = [];
+
+    // Находки слоя, которые править НЕ просили: их нельзя посчитать новыми после правки.
+    // Всё остальное, что всплывёт в этих слоях, появилось из-за перетекания текста.
+    var totalByNode = {}, notAsked = {};
+    findings.forEach(function (f) { totalByNode[f.nodeId] = (totalByNode[f.nodeId] || 0) + 1; });
+    nodeIds.forEach(function (id) {
+      notAsked[id] = Math.max(0, (totalByNode[id] || 0) - byNode.get(id).length);
+    });
+
     writing = true;
 
     for (var n = 0; n < nodeIds.length; n++) {
@@ -987,7 +996,22 @@ if (typeof figma !== 'undefined') {
     writing = false;
     commitUndoSafe();
     await refreshNodes(touched, true);
-    return { applied: applied, dropped: dropped, failed: failed, resized: resized, cancelled: fixCancelled };
+
+    // Склейка сдвигает текст, и там, где раньше стояло ровно, может повиснуть новое.
+    // Это не остаток непочиненного, а другая работа — и назвать её надо иначе,
+    // иначе список после правки читается как «правка не доделалась».
+    var afterByNode = {};
+    findings.forEach(function (f) { afterByNode[f.nodeId] = (afterByNode[f.nodeId] || 0) + 1; });
+    var appeared = 0;
+    for (var a = 0; a < touched.length; a++) {
+      var left = (afterByNode[touched[a]] || 0) - (notAsked[touched[a]] || 0);
+      if (left > 0) appeared += left;
+    }
+
+    return {
+      applied: applied, dropped: dropped, appeared: appeared,
+      failed: failed, resized: resized, cancelled: fixCancelled
+    };
   }
 
   async function revert(nodeId) {
@@ -1147,12 +1171,13 @@ if (typeof figma !== 'undefined') {
       try {
         var r = await applyFix(msg.ids);
         postResults({
-          fixed: r.applied, dropped: r.dropped,
+          fixed: r.applied, dropped: r.dropped, appeared: r.appeared,
           failed: r.failed, resized: r.resized, fixCancelled: r.cancelled
         });
         var parts = [];
         if (r.applied) parts.push('Исправил ' + r.applied);
         if (r.dropped) parts.push('ещё ' + r.dropped + ' ' + plural(r.dropped, 'отпала', 'отпали', 'отпало'));
+        if (r.appeared) parts.push('появилось ' + r.appeared + ' ' + plural(r.appeared, 'новая', 'новые', 'новых'));
         if (r.resized.length) parts.push('у ' + r.resized.length + ' ' + plural(r.resized.length, 'слоя', 'слоёв', 'слоёв') + ' изменился размер');
         if (r.failed.length) parts.push('не смог ' + r.failed.length);
         figma.notify(parts.length ? parts.join(', ') : 'Нечего исправлять');
