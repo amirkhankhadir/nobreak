@@ -100,6 +100,22 @@ var ABBR_UNIT = {};
 ['тыс', 'млн', 'млрд', 'куб', 'кв', 'долл'].forEach(function (a) { ABBR_UNIT[a] = true; });
 
 /**
+ * LOWER — сокращение-приставка перед СТРОЧНЫМ словом: «гос. орган», «др. категории»,
+ * «юр. лиц», «физ. лиц». Собрано по живому файлу, а не придумано.
+ *
+ * Гейт «дальше строчная» здесь не косметика, а защита. Точка после короткого слова
+ * чаще всего означает конец предложения: в том же файле нашлись «2 часа. Шаг ставки»,
+ * «оплачивать не нужно. Выберите», «вашей ЭЦП. Его», «через eGov. Вы». Всё это склеила
+ * бы любая эвристика по длине или заглавной букве. А предложение со строчной не
+ * начинается — значит в этот класс концы предложений не попадают вовсе.
+ *
+ * «др.» умеет и заканчивать фразу («и др.»), но тогда следом либо ничего, либо новое
+ * предложение с заглавной, — тот же гейт закрывает и этот случай.
+ */
+var ABBR_LOWER = {};
+['гос', 'др', 'юр', 'физ'].forEach(function (a) { ABBR_LOWER[a] = true; });
+
+/**
  * Единицы измерения, которые прилипают к числу слева (TYP-03).
  *
  * Кроме сокращений держим ПОЛНЫЕ формы времени и количества: в интерфейсе «15 минут»
@@ -177,6 +193,9 @@ function findHanging(t, out, enabled) {
 function isUpper(ch) {
   return !!ch && /[A-ZА-ЯЁ]/.test(ch);
 }
+function isLower(ch) {
+  return !!ch && /[a-zа-яё]/.test(ch);
+}
 
 /** Конец слова вместе с внутренним дефисом: «р-н», «б-р», «пр-д». */
 function abbrWordEnd(t, i) {
@@ -222,8 +241,8 @@ function findAbbrev(t, out) {
     var key = normWord(t.slice(s, i));
     var asName = ABBR_NAME[key] === true, asNum = ABBR_NUM[key] === true;
     var asSeq = ABBR_SEQ[key] === true, asRef = ABBR_REF[key] === true;
-    var asUnit = ABBR_UNIT[key] === true;
-    if (!asName && !asNum && !asSeq && !asRef && !asUnit) continue;
+    var asUnit = ABBR_UNIT[key] === true, asLower = ABBR_LOWER[key] === true;
+    if (!asName && !asNum && !asSeq && !asRef && !asUnit && !asLower) continue;
     // Стяжённые сокращения пишутся без точки: «р-н», «б-р», «пр-д», «кв-л» — у них
     // признак сокращения сам дефис. От остальных точка обязательна: без неё «с Алматы»
     // это предлог, а не село, и правило залезло бы в чужую работу.
@@ -238,7 +257,8 @@ function findAbbrev(t, out) {
       (asName && isUpper(nx) && !digitBefore(t, s)) ||
       (asSeq && seqTail(t, sp + 1)) ||
       (asRef && isLetter(nx) && !digitBefore(t, s)) ||
-      (asUnit && (unitAt(t, sp + 1) || CURRENCY.indexOf(nx) !== -1 || isUpper(nx)));
+      (asUnit && (unitAt(t, sp + 1) || CURRENCY.indexOf(nx) !== -1 || isUpper(nx))) ||
+      (asLower && isLower(nx) && !digitBefore(t, s));
     if (!hit) continue;
     out.push({
       rule: 'abbr', at: sp, len: 1, put: NBSP,
