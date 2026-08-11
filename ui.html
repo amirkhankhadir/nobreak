@@ -229,7 +229,19 @@
     .lrow .l-count, .lrow .l-screens {
       flex-shrink: 0; font-size: 11px; color: var(--figma-color-text-secondary, #888);
     }
-    .lrow:hover .row-fix { display: inline-block; }
+    /* «Исправить все» на слое — серая, как у шапки правила. Цвет показывает охват:
+       синее действие точное, на одну находку, которую видно в строке; серое —
+       пакетное, где часть правок глазами не смотрели. Пакетная правка ещё и меняет
+       размер слоя, так что заманчивее точной она выглядеть не должна.
+       Фон сплошной, а не прозрачный: кнопка лежит поверх имени слоя и счётчика. */
+    .l-fix {
+      position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+      display: none; font-size: 10px; font-family: inherit; line-height: 1.4; cursor: pointer;
+      border: 1px solid var(--figma-color-border, #ddd); border-radius: 10px; padding: 2px 8px;
+      background: var(--figma-color-bg, #fff); color: var(--figma-color-text-secondary, #888); outline: none;
+    }
+    .lrow:hover .l-fix { display: inline-block; }
+    .l-fix:hover { color: var(--figma-color-text, #333); border-color: var(--figma-color-text-secondary, #999); }
     .row.nested { padding-left: 34px; }
     /* position нужен кнопке «Исправить»: она лежит поверх строки, а не в потоке.
        min-height держит одинаковую высоту всех строк, с кнопкой и без неё. */
@@ -378,6 +390,8 @@
         sub: 'Служебные слова 1–3 букв: «в», «по», «из», «не», «и».' },
       { id: 'hangLong', label: 'Длинные предлоги и союзы', short: 'Длинные предлоги', isSub: true,
         sub: 'От 4 букв: «около», «через», «чтобы», «после».' },
+      { id: 'abbr', label: 'Сокращения с точкой', short: 'Сокращения',
+        sub: '«ул. Абая», «п. 3», «120 тыс. км», «и т. д.».' },
       { id: 'dash', label: 'Пробел перед тире', short: 'Пробел перед тире',
         sub: 'Чтобы тире не уезжало на новую строку.' },
       { id: 'num', label: 'Число и единица, валюта, №', short: 'Число и единица',
@@ -387,9 +401,11 @@
     ];
     var RULE_BY_ID = {};
     RULES.forEach(function (r) { RULE_BY_ID[r.id] = r; });
-    // Служебная категория, а не правило: в списке правил её нет, выключать нечего.
-    // Причина стоит в названии группы, поэтому в строке её повторять не нужно.
-    RULE_BY_ID.nofont = { id: 'nofont', label: 'Нет нужного шрифта', short: 'Нет шрифта' };
+    // Служебные категории, а не правила: в списке правил их нет, выключать нечего.
+    // `nofont` — исторический идентификатор, а не диагноз: сюда падает всё, чью раскладку
+    // строк прочитать не удалось, и причин четыре. Поэтому в названии группы общий повод,
+    // а конкретная причина выводится в строке находки.
+    RULE_BY_ID.nofont = { id: 'nofont', label: 'Не смог прочитать раскладку строк', short: 'Не смог прочитать' };
     RULE_BY_ID.hidden = { id: 'hidden', label: 'Скрытые слои', short: 'Скрытые слои' };
 
     var BADGE = {
@@ -404,7 +420,7 @@
       scope: 'page',
       selCount: 0, selName: '', selIds: {},
       pages: [], excluded: {}, scanHidden: false,
-      rules: { hang: true, hangLong: true, dash: true, num: true, space: true },
+      rules: { hang: true, hangLong: true, abbr: true, dash: true, num: true, space: true },
       rulesDirty: false,
       groups: null, counts: { fix: 0, blocked: 0, unchecked: 0 },
       expanded: {}, expandedLayer: {},
@@ -743,11 +759,19 @@
         row.setAttribute('data-id', it.id);
         row.setAttribute('data-node', it.nodeId);
         row.title = 'Показать на канвасе';
-        var right = g.status === 'blocked'
-          ? esc(it.reason || '')
+        // У «Не проверено» причина у каждой находки своя — их четыре: нет шрифта, слой
+        // не экспортируется, в экспорте нет текста, раскладка не сошлась. В названии
+        // группы такое не уместить, поэтому причина идёт в строку, как у «Нельзя».
+        var right = (g.status === 'blocked' || g.status === 'unchecked')
+          ? esc(it.reason || it.screen || '')
           : esc(it.note || it.screen || '');
+        // Причины длиннее, чем колонка справа, и обрезаются многоточием — поэтому
+        // в подсказке они идут первыми, иначе прочитать их негде.
+        var meta = (g.status === 'blocked' || g.status === 'unchecked')
+          ? (it.reason ? it.reason + (it.screen ? ' · ' + it.screen : '') : (it.screen || ''))
+          : ((it.screen || '') + (it.note ? ' · ' + it.note : ''));
         row.innerHTML = pairHtml(it) +
-          '<span class="row-meta" title="' + esc((it.screen || '') + (it.note ? ' · ' + it.note : '')) + '">' + right + '</span>';
+          '<span class="row-meta" title="' + esc(meta) + '">' + right + '</span>';
         if (g.status === 'fix') {
           var fb = document.createElement('button');
           fb.className = 'row-fix';
@@ -815,7 +839,7 @@
 
         if (g.status === 'fix') {
           var lfix = document.createElement('button');
-          lfix.className = 'row-fix';
+          lfix.className = 'l-fix';
           lfix.textContent = 'Исправить все';
           lfix.addEventListener('click', function (e) {
             e.stopPropagation();
@@ -856,7 +880,7 @@
       var box = el('alerts');
       box.innerHTML = '';
       var a = st.alerts;
-      if (!a || (!a.fixed && !a.resized.length && !a.failed.length)) { box.style.display = 'none'; return; }
+      if (!a || (!a.fixed && !a.dropped && !a.resized.length && !a.failed.length)) { box.style.display = 'none'; return; }
       box.style.display = '';
 
       // Плашки живут до новой проверки или следующей правки, потому что в них есть
@@ -901,14 +925,25 @@
         box.appendChild(d);
       }
 
-      if (a.fixed) {
+      if (a.fixed || a.dropped) {
+        // Внутри слоя правки идут по одной, и после каждой текст перетекает: часть находок
+        // перестаёт висеть сама. Поэтому исправленных бывает меньше, чем строк было
+        // в списке. Молчать об этом нельзя — разница читается как сбой.
+        var body = '<strong>' + (a.fixed ? 'Исправлено ' + a.fixed : 'Править не пришлось') + '</strong>';
+        if (a.dropped) {
+          body += ' — ещё ' + a.dropped + ' ' + plural(a.dropped, 'отпала', 'отпали', 'отпало') +
+            ': текст перетёк, висеть стало нечему';
+        }
+        if (a.fixed) {
+          body += a.dropped ? '. Отменить всё сразу — Cmd + Z' : ' — отменить всё сразу можно через Cmd + Z';
+        }
         var okBox = document.createElement('div');
         okBox.className = 'alert ok';
         okBox.innerHTML =
           '<svg class="alert-ic" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
           '<path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-          '<div class="alert-body"><strong>Исправлено ' + a.fixed + '</strong> — отменить всё сразу можно через Cmd + Z</div>';
-        withClose(okBox, function () { st.alerts.fixed = 0; });
+          '<div class="alert-body">' + body + '</div>';
+        withClose(okBox, function () { st.alerts.fixed = 0; st.alerts.dropped = 0; });
         box.appendChild(okBox);
       }
       if (a.resized.length) {
@@ -1126,7 +1161,7 @@
           st.alerts.failed = st.alerts.failed.filter(function (x) { return x.nodeId !== msg.reverted; });
         }
         if (msg.fixed != null || msg.failed || msg.resized) {
-          st.alerts = { fixed: msg.fixed || 0, resized: msg.resized || [], failed: msg.failed || [] };
+          st.alerts = { fixed: msg.fixed || 0, dropped: msg.dropped || 0, resized: msg.resized || [], failed: msg.failed || [] };
         }
         st.rulesDirty = false;
         renderResults();

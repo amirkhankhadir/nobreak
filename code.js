@@ -58,6 +58,48 @@ for (var fw = 0; fw < FUNC_WORDS.length; fw++) {
 }
 
 /**
+ * Сокращения с точкой: «ул. Абая», «п. 3». Отдельное правило, а не добавка к висячим
+ * словам: иначе имя «Висячие предлоги» врёт, выключить сокращения отдельно нельзя,
+ * да и механика другая — за словом стоит точка, а не пробел.
+ *
+ * Словаря два, потому что двусмысленность снимается не самим сокращением, а тем, что
+ * идёт СЛЕДОМ. «с.» — и село, и страница; «д.» — и деревня, и дом; «стр.» — и строение,
+ * и страница. Поэтому класс выбирает окружение, а не порядок в словарях:
+ *
+ *   NAME — дальше имя собственное с заглавной: «ул. Абая», «г. Алматы».
+ *   NUM  — дальше число: «п. 3», «корп. 2». Гейт железный: буква сюда не попадёт,
+ *          поэтому «ст. Приходите» на стыке предложений не поймается в принципе.
+ *
+ * Слово может лежать в обоих словарях — это нормально, разведёт окружение.
+ */
+var ABBR_NAME = {}, ABBR_NUM = {};
+['ул', 'пр', 'просп', 'пер', 'пл', 'бул', 'б-р', 'ш', 'наб', 'туп', 'пр-д', 'мкр',
+  'кв-л', 'пос', 'с', 'д', 'г', 'обл', 'р-н', 'им'
+].forEach(function (a) { ABBR_NAME[a] = true; });
+['п', 'пп', 'ст', 'гл', 'разд', 'абз', 'рис', 'табл', 'прил', 'стр', 'с', 'д',
+  'корп', 'кв', 'оф', 'эт', 'каб', 'тел', 'доб'
+].forEach(function (a) { ABBR_NUM[a] = true; });
+
+/**
+ * Ещё два окружения, той же природы — сокращение держится за то, что справа.
+ *
+ *   SEQ  — «т.» в связках «т. д.», «т. п.», «т. е.», «т. н.». Хвост закрытый: только
+ *          эти четыре буквы с точкой, иначе «т.» цеплялось бы к любому слову.
+ *          Само «и» перед связкой держит правило висячих слов, здесь оно не нужно.
+ *   REF  — отсылки: «см. таблицу», «напр. так», «ср. цены». Следом обычное слово,
+ *          поэтому гейт по заглавной тут не работает — вместо него запрет на цифру
+ *          слева: «5 см. таблицу» это сантиметры, а не «смотри».
+ *   UNIT — множитель перед единицей: «120 тыс. км», «куб. см», «кв. м», «долл. США».
+ *          Следом обязана идти единица, знак валюты или слово с заглавной.
+ */
+var ABBR_SEQ = { 'т': true };
+var SEQ_TAIL = { 'д': true, 'п': true, 'е': true, 'н': true };
+var ABBR_REF = {};
+['см', 'напр', 'ср'].forEach(function (a) { ABBR_REF[a] = true; });
+var ABBR_UNIT = {};
+['тыс', 'млн', 'млрд', 'куб', 'кв', 'долл'].forEach(function (a) { ABBR_UNIT[a] = true; });
+
+/**
  * Единицы измерения, которые прилипают к числу слева (TYP-03).
  *
  * Кроме сокращений держим ПОЛНЫЕ формы времени и количества: в интерфейсе «15 минут»
@@ -85,7 +127,7 @@ var UNITS = [
 /** Валюты и знаки, которые отбиваются от числа неразрывным пробелом (NUM-03). */
 var CURRENCY = ['₸', '$', '€', '₽', '¥', '£'];
 
-var RULE_ORDER = { hang: 0, hangLong: 1, dash: 2, num: 3, space: 4, nofont: 5, hidden: 6 };
+var RULE_ORDER = { hang: 0, hangLong: 1, abbr: 2, dash: 3, num: 4, space: 5, nofont: 6, hidden: 7 };
 var STATUS_ORDER = { fix: 0, blocked: 1, unchecked: 2 };
 
 function isWordChar(ch) {
@@ -128,6 +170,79 @@ function findHanging(t, out, enabled) {
     out.push({
       rule: tier, at: i, len: 1, put: NBSP,
       word: raw, next: wordAt(t, i + 1)
+    });
+  }
+}
+
+function isUpper(ch) {
+  return !!ch && /[A-ZА-ЯЁ]/.test(ch);
+}
+
+/** Конец слова вместе с внутренним дефисом: «р-н», «б-р», «пр-д». */
+function abbrWordEnd(t, i) {
+  while (i < t.length && (isWordChar(t[i]) || (t[i] === '-' && isWordChar(t[i + 1])))) i++;
+  return i;
+}
+
+/**
+ * Перед сокращением стоит число: «2024 г.» — это год, он относится к числу СЛЕВА,
+ * и склеивать его с тем, что справа, неверно. Такую пару чинит правило числа с единицей.
+ */
+function digitBefore(t, s) {
+  var j = s - 1;
+  if (t[j] === ' ' || t[j] === NBSP) j--;
+  return isDigit(t[j]);
+}
+
+/** Хвост устойчивой связки: «д.», «п.», «е.», «н.» после «т.». */
+function seqTail(t, i) {
+  return SEQ_TAIL[normWord(t.charAt(i))] === true && t.charAt(i + 1) === '.';
+}
+
+/** В позиции i начинается единица измерения и не является началом другого слова. */
+function unitAt(t, i) {
+  var rest = t.slice(i);
+  for (var u = 0; u < UNITS.length; u++) {
+    var unit = UNITS[u];
+    if (rest.indexOf(unit) !== 0) continue;
+    if (isWordChar(rest.charAt(unit.length))) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Сокращение с точкой + обычный пробел + то, к чему оно относится. */
+function findAbbrev(t, out) {
+  var i = 0;
+  while (i < t.length) {
+    if (!isLetter(t[i])) { i++; continue; }
+    var s = i;
+    i = abbrWordEnd(t, i);
+    var hasDot = t[i] === '.';
+    var key = normWord(t.slice(s, i));
+    var asName = ABBR_NAME[key] === true, asNum = ABBR_NUM[key] === true;
+    var asSeq = ABBR_SEQ[key] === true, asRef = ABBR_REF[key] === true;
+    var asUnit = ABBR_UNIT[key] === true;
+    if (!asName && !asNum && !asSeq && !asRef && !asUnit) continue;
+    // Стяжённые сокращения пишутся без точки: «р-н», «б-р», «пр-д», «кв-л» — у них
+    // признак сокращения сам дефис. От остальных точка обязательна: без неё «с Алматы»
+    // это предлог, а не село, и правило залезло бы в чужую работу.
+    if (!hasDot && key.indexOf('-') === -1) continue;
+    var sp = hasDot ? i + 1 : i;
+    // Правим только обычный пробел: стоит неразрывный — находки нет. Отсюда
+    // идемпотентность, как и в остальных правилах.
+    if (t[sp] !== ' ') continue;
+    var nx = t.charAt(sp + 1);
+    var hit =
+      (asNum && isDigit(nx)) ||
+      (asName && isUpper(nx) && !digitBefore(t, s)) ||
+      (asSeq && seqTail(t, sp + 1)) ||
+      (asRef && isLetter(nx) && !digitBefore(t, s)) ||
+      (asUnit && (unitAt(t, sp + 1) || CURRENCY.indexOf(nx) !== -1 || isUpper(nx)));
+    if (!hit) continue;
+    out.push({
+      rule: 'abbr', at: sp, len: 1, put: NBSP,
+      word: t.slice(s, sp), next: wordAt(t, sp + 1)
     });
   }
 }
@@ -218,6 +333,7 @@ function analyze(text, enabled) {
   if (!text) return out;
   enabled = enabled || {};
   if (enabled.hang || enabled.hangLong) findHanging(text, out, enabled);
+  if (enabled.abbr) findAbbrev(text, out);
   if (enabled.dash) findDash(text, out);
   if (enabled.num) findNumUnit(text, out);
   if (enabled.space) findSpaces(text, out);
@@ -340,7 +456,11 @@ function keepVisible(edits, lines) {
   lineBreakSpaces(lines).forEach(function (p) { brk[p] = true; });
   return edits.filter(function (e) {
     if (e.rule === 'space') return true;
-    return e.len > 0 && brk[e.at] === true;
+    // Вставка (len 0) — тоже не про переносы: «№3» неверно при любой ширине, как двойной
+    // пробел. Заменять там нечего, значит и пробела на переносе у такой находки быть
+    // не может, и проверка «висит ли сейчас» отбрасывала бы её всегда.
+    if (e.len === 0) return true;
+    return brk[e.at] === true;
   });
 }
 
@@ -375,7 +495,7 @@ if (typeof figma !== 'undefined') {
   figma.showUI(__html__, { width: UI_W, height: 280, themeColors: true });
 
   var scanHidden = false;
-  var rules = { hang: true, hangLong: true, dash: true, num: true, space: true };
+  var rules = { hang: true, hangLong: true, abbr: true, dash: true, num: true, space: true };
   var scanCancelled = false;
   var fixCancelled = false;
   var writing = false;
@@ -450,7 +570,9 @@ if (typeof figma !== 'undefined') {
   // подменным, и переносы получаются не те, что видит дизайнер. Такой слой показываем
   // одной строкой без разбора находок — лучше честная пометка, чем ложная точность.
   function uncheckedReason(node) {
-    if (node.hasMissingFont) return 'в тексте нет шрифта — раскладка строк ненадёжна';
+    // Причина уходит в строку находки под общим заголовком группы, поэтому она короткая:
+    // длинная фраза там всё равно обрезается многоточием.
+    if (node.hasMissingFont) return 'нет нужного шрифта';
     return '';
   }
 
@@ -476,7 +598,7 @@ if (typeof figma !== 'undefined') {
     // текста. Последняя видимая строка ничего не переносит, поэтому её обрыв
     // посреди слова на результат не влияет — сама она находок не даёт.
     if (src.indexOf(joined) === 0) return { lines: lines, ok: true, truncated: true };
-    return { lines: lines, ok: false, why: 'раскладка строк не сошлась с текстом' };
+    return { lines: lines, ok: false, why: 'раскладка не сошлась с текстом' };
   }
 
   /* ——— сбор текстовых слоёв ——— */
@@ -538,8 +660,9 @@ if (typeof figma !== 'undefined') {
     var canWrap = node.textAutoResize !== 'WIDTH_AND_HEIGHT' || chars.indexOf('\n') !== -1;
     var truncated = false;
     if (!canWrap) {
-      // В одну строку текст не разложится — висеть нечему. Лишние пробелы остаются дефектом.
-      edits = edits.filter(function (e) { return e.rule === 'space'; });
+      // В одну строку текст не разложится — висеть нечему. Остаётся то, что дефект
+      // при любой раскладке: лишние пробелы и вставки вроде «№3».
+      edits = edits.filter(function (e) { return e.rule === 'space' || e.len === 0; });
     } else {
       var lay = await layoutLines(node, chars);
       if (!lay.ok) return { status: 'unchecked', reason: lay.why, edits: [], truncated: false };
@@ -706,13 +829,26 @@ if (typeof figma !== 'undefined') {
   // Правим точечно: удалить символ и вставить неразрывный. Через `node.characters = …`
   // делать нельзя — присваивание всей строки схлопывает смешанное форматирование
   // (жирный фрагмент, ссылка, другой цвет) к стилю первого символа.
-  function writeInPlace(node, edits) {
-    var sorted = edits.slice().sort(function (a, b) { return a.at - b.at; });
-    for (var i = sorted.length - 1; i >= 0; i--) {
-      var e = sorted[i];
+  // Правки применяются ровно в том порядке, в каком перечислены. Нужно там, где каждая
+  // следующая посчитана по уже изменённому тексту: сортировать их нельзя.
+  function writeSeq(node, edits) {
+    for (var i = 0; i < edits.length; i++) {
+      var e = edits[i];
       if (e.len > 0) node.deleteCharacters(e.at, e.at + e.len);
       if (e.put) node.insertCharacters(e.at, e.put, e.at === 0 ? 'AFTER' : 'BEFORE');
     }
+  }
+
+  // Набор правок, посчитанных по одному тексту: идём с конца, чтобы позиции не съезжали.
+  function writeInPlace(node, edits) {
+    writeSeq(node, edits.slice().sort(function (a, b) { return b.at - a.at; }));
+  }
+
+  // Находка «та же самая» — по смыслу, а не по позиции: после первой правки текст
+  // перетекает и все позиции ниже уезжают. Правило плюс склеиваемая пара слов
+  // (у чисел и пробелов — пометка) опознают находку и в переставшемся тексте.
+  function editKey(e) {
+    return e.rule + '|' + (e.word || '') + '|' + (e.next || '') + '|' + (e.note || '');
   }
 
   // Не во всех окружениях commitUndo доступен. Если его нет, шаг отмены просто не делится —
@@ -759,7 +895,7 @@ if (typeof figma !== 'undefined') {
     }
 
     var nodeIds = Array.from(byNode.keys());
-    var applied = 0, failed = [], resized = [], touched = [];
+    var applied = 0, dropped = 0, failed = [], resized = [], touched = [];
     writing = true;
 
     for (var n = 0; n < nodeIds.length; n++) {
@@ -773,40 +909,72 @@ if (typeof figma !== 'undefined') {
         continue;
       }
       var before = node.characters;
-      var list = byNode.get(nodeId).filter(function (f) {
+      // Текст мог измениться после проверки. Позиции сверяем один раз, до первой правки:
+      // дальше они всё равно поедут, и слой будет разбираться заново.
+      var asked = byNode.get(nodeId).filter(function (f) {
         return before.slice(f.at, f.at + f.len) === f.was;
       });
-      if (!list.length) {
+      if (!asked.length) {
         failed.push({ nodeId: nodeId, screen: meta.screen || '', reason: 'текст изменился — проверьте заново' });
         continue;
       }
+      // Сколько правок какого вида просили. Больше запрошенного не чиним: находка,
+      // всплывшая из-за перетекания, — новая, и попадёт в список обычным порядком.
+      var want = {};
+      asked.forEach(function (f) { var k = editKey(f); want[k] = (want[k] || 0) + 1; });
+
       var w = node.width, h = node.height;
+      var undoStack = [], fontsLoaded = false, madeHere = 0;
       try {
-        // Значение свойства — плоская строка, поэтому запись через свойство схлопывает
-        // пораздельные стили. В тексте согласий это выглядело как сброс цвета у ссылок.
-        // Точечная правка на таком слое проходит и цвета сохраняет — проверено на живом
-        // инстансе, — поэтому свойство используем только для однородного текста, где
-        // терять нечего: так мы не плодим текстовый оверрайд без нужды.
-        var ref = textPropRef(node);
-        if (ref && styleSegments(node) === 1) {
-          if (!writeViaProperty(node, ref, applyEdits(before, list))) {
-            await loadFonts(node);
-            writeInPlace(node, list);
+        // Правки внутри слоя влияют друг на друга: склеили пару — текст перетёк, переносы
+        // ниже сдвинулись, и часть находок больше ничего не держит. Поэтому применяем
+        // по одной и между правками разбираем слой заново. Иначе слой получает лишние
+        // неразрывные пробелы — ровно ту самую правку «на будущее», которой плагин не делает.
+        // Больше правок, чем просили, сделать нельзя — этим цикл и ограничен.
+        for (var pass = 0; pass < asked.length; pass++) {
+          if (fixCancelled) break;
+          var res = await analyzeNode(node, node.characters);
+          if (res.status !== 'fix') break;
+          var pick = null;
+          for (var q = 0; q < res.edits.length; q++) {
+            var kk = editKey(res.edits[q]);
+            if (want[kk] > 0) { want[kk]--; pick = res.edits[q]; break; }
           }
-        } else {
-          await loadFonts(node);
-          writeInPlace(node, list);
+          if (!pick) break;
+          // Значение свойства — плоская строка, поэтому запись через свойство схлопывает
+          // пораздельные стили. В тексте согласий это выглядело как сброс цвета у ссылок.
+          // Точечная правка на таком слое проходит и цвета сохраняет — проверено на живом
+          // инстансе, — поэтому свойство используем только для однородного текста, где
+          // терять нечего: так мы не плодим текстовый оверрайд без нужды.
+          var ref = textPropRef(node);
+          var viaProp = false;
+          if (ref && styleSegments(node) === 1) {
+            viaProp = writeViaProperty(node, ref, applyEdits(node.characters, [pick]));
+          }
+          if (!viaProp) {
+            if (!fontsLoaded) { await loadFonts(node); fontsLoaded = true; }
+            writeInPlace(node, [pick]);
+          }
+          // Обратная правка посчитана по уже изменённому тексту, поэтому откатывать их
+          // надо от последней к первой — складываем стопкой.
+          undoStack.unshift(inverseEdits([pick])[0]);
+          madeHere++;
         }
-        undoText.set(nodeId, before);
-        undoEdits.set(nodeId, inverseEdits(list));
-        applied += list.length;
-        touched.push(nodeId);
-        if (Math.abs(node.width - w) > 0.5 || Math.abs(node.height - h) > 0.5) {
-          resized.push({
-            nodeId: nodeId, screen: meta.screen || '', layer: node.name,
-            dw: Math.round(node.width - w), dh: Math.round(node.height - h)
-          });
+        if (madeHere) {
+          undoText.set(nodeId, before);
+          undoEdits.set(nodeId, undoStack);
+          applied += madeHere;
+          touched.push(nodeId);
+          if (Math.abs(node.width - w) > 0.5 || Math.abs(node.height - h) > 0.5) {
+            resized.push({
+              nodeId: nodeId, screen: meta.screen || '', layer: node.name,
+              dw: Math.round(node.width - w), dh: Math.round(node.height - h)
+            });
+          }
         }
+        // Остальное перестало висеть само — это не ошибка, но сказать об этом надо:
+        // иначе «исправил 2» там, где в списке было 4 строки, читается как сбой.
+        dropped += asked.length - madeHere;
       } catch (err) {
         failed.push({
           nodeId: nodeId, screen: meta.screen || '',
@@ -819,7 +987,7 @@ if (typeof figma !== 'undefined') {
     writing = false;
     commitUndoSafe();
     await refreshNodes(touched, true);
-    return { applied: applied, failed: failed, resized: resized, cancelled: fixCancelled };
+    return { applied: applied, dropped: dropped, failed: failed, resized: resized, cancelled: fixCancelled };
   }
 
   async function revert(nodeId) {
@@ -832,11 +1000,15 @@ if (typeof figma !== 'undefined') {
       // Откатываем тем же способом, которым правили. Если правка была точечной,
       // возврат целой строкой схлопнул бы стили ровно так же, как это делала запись
       // в свойство, — поэтому сохранённые обратные правки идут первыми.
+      //
+      // Порядок здесь значащий: правки применялись по одной, каждая следующая считалась
+      // по уже изменённому тексту. Поэтому откат идёт от последней к первой — стопка
+      // сложена в этом порядке, и сортировать её нельзя.
       var inv = undoEdits.get(nodeId);
       var ref = textPropRef(node);
       if (inv && inv.length) {
         await loadFonts(node);
-        writeInPlace(node, inv);
+        writeSeq(node, inv);
       } else if (ref) {
         writeViaProperty(node, ref, before);
       } else {
@@ -975,10 +1147,12 @@ if (typeof figma !== 'undefined') {
       try {
         var r = await applyFix(msg.ids);
         postResults({
-          fixed: r.applied, failed: r.failed, resized: r.resized, fixCancelled: r.cancelled
+          fixed: r.applied, dropped: r.dropped,
+          failed: r.failed, resized: r.resized, fixCancelled: r.cancelled
         });
         var parts = [];
         if (r.applied) parts.push('Исправил ' + r.applied);
+        if (r.dropped) parts.push('ещё ' + r.dropped + ' ' + plural(r.dropped, 'отпала', 'отпали', 'отпало'));
         if (r.resized.length) parts.push('у ' + r.resized.length + ' ' + plural(r.resized.length, 'слоя', 'слоёв', 'слоёв') + ' изменился размер');
         if (r.failed.length) parts.push('не смог ' + r.failed.length);
         figma.notify(parts.length ? parts.join(', ') : 'Нечего исправлять');
