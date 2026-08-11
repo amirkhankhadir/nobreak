@@ -146,17 +146,56 @@ var CURRENCY = ['₸', '$', '€', '₽', '¥', '£'];
 var RULE_ORDER = { hang: 0, hangLong: 1, abbr: 2, dash: 3, num: 4, space: 5, nofont: 6, hidden: 7 };
 var STATUS_ORDER = { fix: 0, blocked: 1, unchecked: 2 };
 
+// Казахские буквы входят в алфавит намеренно, хотя правила у нас русские: без них
+// «түрі» разбиралось на «т» и остаток, границы слов ехали, и языковой гейт ниже
+// проверял не то слово. Слово должно опознаваться целиком — тогда оно просто
+// не найдётся в русском словаре, и это правильный исход.
+// Регэкспы собраны один раз: isWordChar зовётся на каждый символ каждого слоя,
+// и создание объекта внутри убивало бы скорость на файле в тысячи слоёв.
+var RE_WORD = /[0-9A-Za-zА-Яа-яЁёӘәҒғҚқҢңӨөҰұҮүҺһІі]/;
+var RE_LETTER = /[A-Za-zА-Яа-яЁёӘәҒғҚқҢңӨөҰұҮүҺһІі]/;
 function isWordChar(ch) {
-  return !!ch && /[0-9A-Za-zА-Яа-яЁё]/.test(ch);
+  return !!ch && RE_WORD.test(ch);
 }
 function isLetter(ch) {
-  return !!ch && /[A-Za-zА-Яа-яЁё]/.test(ch);
+  return !!ch && RE_LETTER.test(ch);
 }
 function isDigit(ch) {
   return !!ch && ch >= '0' && ch <= '9';
 }
 function normWord(s) {
   return s.toLowerCase().replace(/ё/g, 'е');
+}
+
+/**
+ * Буквы, которых в русском нет. Ими опознаём казахский: языковые правила рассчитаны
+ * на русский и на казахском срабатывали по случайному совпадению слов — «Не істеу»
+ * («не» здесь «что»), «А түрі», «да тіркеңіз».
+ *
+ * Проверяем ПАРУ склеиваемых слов, а не весь слой: в русском тексте попадаются казахские
+ * имена собственные — «Қазақстан», «Әсел», — и выбрасывать из-за них целый абзац значит
+ * терять настоящие находки рядом.
+ *
+ * Правила про пробелы, числа, валюту и тире этот гейт не касается: они языку не принадлежат.
+ */
+var KZ_LETTERS = /[ӘәҒғҚқҢңӨөҰұҮүҺһІі]/;
+function looksKazakh(a, b) {
+  return KZ_LETTERS.test(a) || KZ_LETTERS.test(b);
+}
+
+/**
+ * Аббревиатура из заглавных — не служебное слово. Регистр при поиске опускается, поэтому
+ * «КО» совпадало с предлогом «ко»: на живом файле это дало пять ложных находок. Тот же
+ * класс выстрелил бы и на русском — «В» вольты, «ТО», «ИП», «ДО».
+ *
+ * Отличаем аббревиатуру от текста, целиком набранного капсом: у аббревиатуры следующее
+ * слово в обычном регистре («ТО автомобиля»), а в капслоке заглавные и дальше
+ * («НЕ ЗАБУДЬТЕ ОПЛАТИТЬ») — там «НЕ» настоящая частица, её надо клеить.
+ * Одиночную заглавную не трогаем вовсе: «А вот и он» — законный союз в начале фразы.
+ */
+function isAcronym(raw, next) {
+  if (raw.length < 2 || raw !== raw.toUpperCase() || !/[A-ZА-ЯЁ]/.test(raw)) return false;
+  return !/[a-zа-яё]/.test(next) ? false : true;
 }
 
 /** Слово, начинающееся в позиции i (для подписи находки). */
@@ -183,18 +222,21 @@ function findHanging(t, out, enabled) {
     // Правим только обычный пробел: если там уже неразрывный, находки нет —
     // отсюда идемпотентность, повторный прогон ничего не меняет.
     if (t[i] !== ' ' || !isWordChar(t[i + 1])) continue;
+    var nextWord = wordAt(t, i + 1);
+    if (isAcronym(raw, nextWord)) continue;
+    if (looksKazakh(raw, nextWord)) continue;
     out.push({
       rule: tier, at: i, len: 1, put: NBSP,
-      word: raw, next: wordAt(t, i + 1)
+      word: raw, next: nextWord
     });
   }
 }
 
 function isUpper(ch) {
-  return !!ch && /[A-ZА-ЯЁ]/.test(ch);
+  return !!ch && /[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ]/.test(ch);
 }
 function isLower(ch) {
-  return !!ch && /[a-zа-яё]/.test(ch);
+  return !!ch && /[a-zа-яёәғқңөұүһі]/.test(ch);
 }
 
 /** Конец слова вместе с внутренним дефисом: «р-н», «б-р», «пр-д». */
@@ -260,9 +302,11 @@ function findAbbrev(t, out) {
       (asUnit && (unitAt(t, sp + 1) || CURRENCY.indexOf(nx) !== -1 || isUpper(nx))) ||
       (asLower && isLower(nx) && !digitBefore(t, s));
     if (!hit) continue;
+    var abbrWord = t.slice(s, sp), abbrNext = wordAt(t, sp + 1);
+    if (looksKazakh(abbrWord, abbrNext)) continue;
     out.push({
       rule: 'abbr', at: sp, len: 1, put: NBSP,
-      word: t.slice(s, sp), next: wordAt(t, sp + 1)
+      word: abbrWord, next: abbrNext
     });
   }
 }
@@ -666,17 +710,28 @@ if (typeof figma !== 'undefined') {
       ? [figma.currentPage]
       : figma.root.children.filter(function (c) { return c.type === 'PAGE' && !exclude[c.id]; });
 
+    // Страницу приходится ОТКРЫВАТЬ, а не только загружать. `page.loadAsync()` подтягивает
+    // дерево страницы, но не начинку инстансов, а реальные макеты — почти целиком инстансы:
+    // на живом файле область «Файл» из-за этого давала 95 находок там, где на одной
+    // открытой странице их 108. Снятие `documentAccess: dynamic-page` не помогло, помогает
+    // только открытие. Разбор при этом можно оставить как есть: экспорт слоя работает
+    // и после ухода на другую страницу — проверено.
+    //
+    // Побочный эффект: вид пользователя прыгает по страницам. Поэтому в конце возвращаем
+    // его туда, где он был, — в том числе если проверку отменили.
+    var startPage = figma.currentPage;
     for (var p = 0; p < pages.length; p++) {
-      if (scanCancelled) return res;
+      if (scanCancelled) break;
       var page = pages[p];
       figma.ui.postMessage({ type: 'scan-collect', pageName: page.name, current: p + 1, total: pages.length });
-      if (page !== figma.currentPage) await page.loadAsync();
+      if (page !== figma.currentPage) await figma.setCurrentPageAsync(page);
       var found = page.findAllWithCriteria({ types: ['TEXT'] });
       for (var k = 0; k < found.length; k++) {
         res.push({ node: found[k], pageId: page.id, pageName: page.name });
       }
       await pause();
     }
+    if (figma.currentPage !== startPage) await figma.setCurrentPageAsync(startPage);
     return res;
   }
 
