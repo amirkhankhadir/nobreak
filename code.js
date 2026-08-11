@@ -587,7 +587,21 @@ if (typeof figma !== 'undefined') {
     try {
       svg = await node.exportAsync({ format: 'SVG_STRING', svgOutlineText: false });
     } catch (e) {
-      return { lines: [], ok: false, why: 'слой не экспортируется' };
+      // Figma отказывается отдавать SVG для слоёв внутри некоторых обрезанных поддеревьев
+      // и врёт при этом про «нет видимых слоёв»: PNG у того же слоя отдаётся, у родителя
+      // SVG тоже падает, а тремя уровнями выше — уже нет. Спасает useAbsoluteBounds:
+      // на живом макете так вернулись 134 слоя из 1639. Флаг меняет только рамку экспорта,
+      // не раскладку, а если разбор всё же собьётся — поймает самопроверка ниже.
+      //
+      // Вторым заходом, а не первым: основной путь проверен на тысяче слоёв, и менять
+      // его ради восьми процентов случаев незачем.
+      try {
+        svg = await node.exportAsync({
+          format: 'SVG_STRING', svgOutlineText: false, useAbsoluteBounds: true
+        });
+      } catch (e2) {
+        return { lines: [], ok: false, why: 'слой не экспортируется' };
+      }
     }
     var lines = parseSvgLines(svg);
     if (!lines.length) return { lines: [], ok: false, why: 'в экспорте нет текста' };
@@ -885,134 +899,176 @@ if (typeof figma !== 'undefined') {
     return false;
   }
 
+  // Сколько догоняющих проходов делаем максимум. Замер на живом файле: колонка из восьми
+  // абзацев сходится за три. Шесть — с запасом, а не бесконечный цикл: если не сошлось,
+  // честно говорим «осталось столько-то», а не крутимся молча.
+  var MAX_CHASE = 6;
+
+  /**
+   * Правка выделенных находок.
+   *
+   * Два вложенных цикла, и оба нужны по одной причине — склейка сдвигает текст:
+   *   внутренний  — правки в одном слое применяем по одной, между ними разбирая слой
+   *                 заново: после первой части находок уже ничего не держит;
+   *   внешний     — когда текст сдвинулся, повиснуть может то, что стояло ровно.
+   *                 Догоняем, пока слой не станет чистым.
+   *
+   * `figma.commitUndo()` стоит один раз в самом конце, поэтому все проходы — один шаг
+   * отмены: Cmd + Z возвращает всё сразу. Звать applyFix повторно снаружи нельзя,
+   * иначе шагов станет столько же, сколько проходов.
+   */
   async function applyFix(ids) {
     var byNode = new Map();
+    var askedRules = {};
     for (var i = 0; i < ids.length; i++) {
       var f = findings.get(ids[i]);
       if (!f || f.status !== 'fix') continue;
       if (!byNode.has(f.nodeId)) byNode.set(f.nodeId, []);
       byNode.get(f.nodeId).push(f);
+      askedRules[f.rule] = true;
     }
 
-    var nodeIds = Array.from(byNode.keys());
-    var applied = 0, dropped = 0, failed = [], resized = [], touched = [];
-
-    // Находки слоя, которые править НЕ просили: их нельзя посчитать новыми после правки.
-    // Всё остальное, что всплывёт в этих слоях, появилось из-за перетекания текста.
-    var totalByNode = {}, notAsked = {};
-    findings.forEach(function (f) { totalByNode[f.nodeId] = (totalByNode[f.nodeId] || 0) + 1; });
-    nodeIds.forEach(function (id) {
-      notAsked[id] = Math.max(0, (totalByNode[id] || 0) - byNode.get(id).length);
-    });
+    var applied = 0, dropped = 0, failed = [], resized = [], rounds = 0;
+    var touched = {};    // nodeId → true, за все проходы
+    var origSize = {};   // nodeId → размер до ПЕРВОЙ правки
+    // Догоняем только там, где нажали пакетную кнопку: она значит «почини это место».
+    // Нажали «Исправить» на одной строке — делаем ровно одну правку, без самодеятельности.
+    var chase = ids.length > 1;
 
     writing = true;
 
-    for (var n = 0; n < nodeIds.length; n++) {
-      if (fixCancelled) break;
-      var nodeId = nodeIds[n];
-      figma.ui.postMessage({ type: 'fix-progress', current: n + 1, total: nodeIds.length });
-      var meta = nodeMeta.get(nodeId) || {};
-      var node = await figma.getNodeByIdAsync(nodeId);
-      if (!node || node.type !== 'TEXT') {
-        failed.push({ nodeId: nodeId, screen: meta.screen || '', head: meta.head || '', reason: 'слой не найден' });
-        continue;
-      }
-      var before = node.characters;
-      // Текст мог измениться после проверки. Позиции сверяем один раз, до первой правки:
-      // дальше они всё равно поедут, и слой будет разбираться заново.
-      var asked = byNode.get(nodeId).filter(function (f) {
-        return before.slice(f.at, f.at + f.len) === f.was;
-      });
-      if (!asked.length) {
-        failed.push({ nodeId: nodeId, screen: meta.screen || '', head: meta.head || '', reason: 'текст изменился — проверьте заново' });
-        continue;
-      }
-      // Сколько правок какого вида просили. Больше запрошенного не чиним: находка,
-      // всплывшая из-за перетекания, — новая, и попадёт в список обычным порядком.
-      var want = {};
-      asked.forEach(function (f) { var k = editKey(f); want[k] = (want[k] || 0) + 1; });
+    while (true) {
+      rounds++;
+      var nodeIds = Array.from(byNode.keys());
 
-      var w = node.width, h = node.height;
-      var undoStack = [], fontsLoaded = false, madeHere = 0;
-      try {
-        // Правки внутри слоя влияют друг на друга: склеили пару — текст перетёк, переносы
-        // ниже сдвинулись, и часть находок больше ничего не держит. Поэтому применяем
-        // по одной и между правками разбираем слой заново. Иначе слой получает лишние
-        // неразрывные пробелы — ровно ту самую правку «на будущее», которой плагин не делает.
-        // Больше правок, чем просили, сделать нельзя — этим цикл и ограничен.
-        for (var pass = 0; pass < asked.length; pass++) {
-          if (fixCancelled) break;
-          var res = await analyzeNode(node, node.characters);
-          if (res.status !== 'fix') break;
-          var pick = null;
-          for (var q = 0; q < res.edits.length; q++) {
-            var kk = editKey(res.edits[q]);
-            if (want[kk] > 0) { want[kk]--; pick = res.edits[q]; break; }
-          }
-          if (!pick) break;
-          // Значение свойства — плоская строка, поэтому запись через свойство схлопывает
-          // пораздельные стили. В тексте согласий это выглядело как сброс цвета у ссылок.
-          // Точечная правка на таком слое проходит и цвета сохраняет — проверено на живом
-          // инстансе, — поэтому свойство используем только для однородного текста, где
-          // терять нечего: так мы не плодим текстовый оверрайд без нужды.
-          var ref = textPropRef(node);
-          var viaProp = false;
-          if (ref && styleSegments(node) === 1) {
-            viaProp = writeViaProperty(node, ref, applyEdits(node.characters, [pick]));
-          }
-          if (!viaProp) {
-            if (!fontsLoaded) { await loadFonts(node); fontsLoaded = true; }
-            writeInPlace(node, [pick]);
-          }
-          // Обратная правка посчитана по уже изменённому тексту, поэтому откатывать их
-          // надо от последней к первой — складываем стопкой.
-          undoStack.unshift(inverseEdits([pick])[0]);
-          madeHere++;
-        }
-        if (madeHere) {
-          undoText.set(nodeId, before);
-          undoEdits.set(nodeId, undoStack);
-          applied += madeHere;
-          touched.push(nodeId);
-          if (Math.abs(node.width - w) > 0.5 || Math.abs(node.height - h) > 0.5) {
-            resized.push({
-              nodeId: nodeId, screen: meta.screen || '', layer: node.name,
-              // Начало текста, а не имя слоя: в макетах слой обычно называется «text»,
-              // и по такому имени не понять, что именно вернётся.
-              head: meta.head || '',
-              dw: Math.round(node.width - w), dh: Math.round(node.height - h)
-            });
-          }
-        }
-        // Остальное перестало висеть само — это не ошибка, но сказать об этом надо:
-        // иначе «исправил 2» там, где в списке было 4 строки, читается как сбой.
-        dropped += asked.length - madeHere;
-      } catch (err) {
-        failed.push({
-          nodeId: nodeId, screen: meta.screen || '', head: meta.head || '',
-          reason: (err && err.message) ? err.message : String(err)
+      for (var n = 0; n < nodeIds.length; n++) {
+        if (fixCancelled) break;
+        var nodeId = nodeIds[n];
+        figma.ui.postMessage({
+          type: 'fix-progress', current: n + 1, total: nodeIds.length, round: rounds
         });
+        var meta = nodeMeta.get(nodeId) || {};
+        var node = await figma.getNodeByIdAsync(nodeId);
+        if (!node || node.type !== 'TEXT') {
+          failed.push({ nodeId: nodeId, screen: meta.screen || '', head: meta.head || '', reason: 'слой не найден' });
+          continue;
+        }
+        var before = node.characters;
+        // Текст мог измениться после проверки. Позиции сверяем один раз, до первой правки:
+        // дальше они всё равно поедут, и слой будет разбираться заново.
+        var asked = byNode.get(nodeId).filter(function (x) {
+          return before.slice(x.at, x.at + x.len) === x.was;
+        });
+        if (!asked.length) {
+          failed.push({ nodeId: nodeId, screen: meta.screen || '', head: meta.head || '', reason: 'текст изменился — проверьте заново' });
+          continue;
+        }
+        // Сколько правок какого вида просили. Больше запрошенного за один проход
+        // не чиним — новое пойдёт следующим проходом и будет посчитано отдельно.
+        var want = {};
+        asked.forEach(function (x) { var k = editKey(x); want[k] = (want[k] || 0) + 1; });
+
+        if (origSize[nodeId] === undefined) origSize[nodeId] = { w: node.width, h: node.height };
+        var undoStack = [], fontsLoaded = false, madeHere = 0;
+        try {
+          for (var pass = 0; pass < asked.length; pass++) {
+            if (fixCancelled) break;
+            var res = await analyzeNode(node, node.characters);
+            if (res.status !== 'fix') break;
+            var pick = null;
+            for (var q = 0; q < res.edits.length; q++) {
+              var kk = editKey(res.edits[q]);
+              if (want[kk] > 0) { want[kk]--; pick = res.edits[q]; break; }
+            }
+            if (!pick) break;
+            // Значение свойства — плоская строка, поэтому запись через свойство схлопывает
+            // пораздельные стили. В тексте согласий это выглядело как сброс цвета у ссылок.
+            // Точечная правка на таком слое проходит и цвета сохраняет — проверено на живом
+            // инстансе, — поэтому свойство используем только для однородного текста, где
+            // терять нечего: так мы не плодим текстовый оверрайд без нужды.
+            var ref = textPropRef(node);
+            var viaProp = false;
+            if (ref && styleSegments(node) === 1) {
+              viaProp = writeViaProperty(node, ref, applyEdits(node.characters, [pick]));
+            }
+            if (!viaProp) {
+              if (!fontsLoaded) { await loadFonts(node); fontsLoaded = true; }
+              writeInPlace(node, [pick]);
+            }
+            // Обратная правка посчитана по уже изменённому тексту, поэтому откатывать их
+            // надо от последней к первой — складываем стопкой.
+            undoStack.unshift(inverseEdits([pick])[0]);
+            madeHere++;
+          }
+          if (madeHere) {
+            // Текст до первой правки, а не до текущего прохода: «вернуть» должно
+            // отменить всё, что мы сделали с этим слоем, а не последний проход.
+            if (!undoText.has(nodeId)) undoText.set(nodeId, before);
+            // Правки прошлых проходов откатываются ПОСЛЕ нынешних — стопка растёт с начала.
+            undoEdits.set(nodeId, undoStack.concat(undoEdits.get(nodeId) || []));
+            applied += madeHere;
+            touched[nodeId] = true;
+          }
+          // Остальное перестало висеть само — это не ошибка, но сказать об этом надо:
+          // иначе «исправил 2» там, где в списке было 4 строки, читается как сбой.
+          dropped += asked.length - madeHere;
+        } catch (err) {
+          failed.push({
+            nodeId: nodeId, screen: meta.screen || '', head: meta.head || '',
+            reason: (err && err.message) ? err.message : String(err)
+          });
+        }
+        if (n % 10 === 9) await pause();
       }
-      if (n % 10 === 9) await pause();
+
+      // Разбираем затронутые слои заново: отсюда и берётся список для догона.
+      await refreshNodes(Object.keys(touched), true);
+
+      if (!chase || fixCancelled || rounds >= MAX_CHASE) break;
+
+      // В догон идёт только то, что всплыло на затронутых слоях и по тем же правилам,
+      // о которых просили. Иначе проход залезет в работу, которую не заказывали.
+      var next = new Map();
+      findings.forEach(function (x) {
+        if (x.status !== 'fix' || !touched[x.nodeId] || !askedRules[x.rule]) return;
+        if (!next.has(x.nodeId)) next.set(x.nodeId, []);
+        next.get(x.nodeId).push(x);
+      });
+      if (!next.size) break;
+      byNode = next;
     }
 
     writing = false;
     commitUndoSafe();
-    await refreshNodes(touched, true);
 
-    // Склейка сдвигает текст, и там, где раньше стояло ровно, может повиснуть новое.
-    // Это не остаток непочиненного, а другая работа — и назвать её надо иначе,
-    // иначе список после правки читается как «правка не доделалась».
-    var afterByNode = {};
-    findings.forEach(function (f) { afterByNode[f.nodeId] = (afterByNode[f.nodeId] || 0) + 1; });
-    var appeared = 0;
-    for (var a = 0; a < touched.length; a++) {
-      var left = (afterByNode[touched[a]] || 0) - (notAsked[touched[a]] || 0);
-      if (left > 0) appeared += left;
+    // Размер сравниваем с тем, что было до первого прохода: иначе один слой попадёт
+    // в предупреждение столько раз, сколько проходов его касалось.
+    var sized = Object.keys(origSize);
+    for (var s = 0; s < sized.length; s++) {
+      if (!touched[sized[s]]) continue;
+      var nd = await figma.getNodeByIdAsync(sized[s]);
+      if (!nd || nd.type !== 'TEXT') continue;
+      var o = origSize[sized[s]], mt = nodeMeta.get(sized[s]) || {};
+      if (Math.abs(nd.width - o.w) > 0.5 || Math.abs(nd.height - o.h) > 0.5) {
+        resized.push({
+          nodeId: sized[s], screen: mt.screen || '', layer: nd.name,
+          // Начало текста, а не имя слоя: в макетах слой обычно называется «text»,
+          // и по такому имени не понять, что именно вернётся.
+          head: mt.head || '',
+          dw: Math.round(nd.width - o.w), dh: Math.round(nd.height - o.h)
+        });
+      }
     }
 
+    // Что осталось непочиненным на затронутых слоях. В норме ноль — мы догнали.
+    // Не ноль значит одно из двух: кончились проходы или прогон отменили.
+    var left = 0;
+    findings.forEach(function (x) {
+      if (x.status === 'fix' && touched[x.nodeId] && askedRules[x.rule]) left++;
+    });
+
     return {
-      applied: applied, dropped: dropped, appeared: appeared,
+      applied: applied, dropped: dropped, left: left, rounds: rounds,
       failed: failed, resized: resized, cancelled: fixCancelled
     };
   }
@@ -1174,13 +1230,15 @@ if (typeof figma !== 'undefined') {
       try {
         var r = await applyFix(msg.ids);
         postResults({
-          fixed: r.applied, dropped: r.dropped, appeared: r.appeared,
+          fixed: r.applied, dropped: r.dropped, left: r.left, rounds: r.rounds,
           failed: r.failed, resized: r.resized, fixCancelled: r.cancelled
         });
         var parts = [];
-        if (r.applied) parts.push('Исправил ' + r.applied);
-        if (r.dropped) parts.push('ещё ' + r.dropped + ' ' + plural(r.dropped, 'отпала', 'отпали', 'отпало'));
-        if (r.appeared) parts.push('появилось ' + r.appeared + ' ' + plural(r.appeared, 'новая', 'новые', 'новых'));
+        if (r.applied) {
+          parts.push('Исправил ' + r.applied +
+            (r.rounds > 1 ? ' за ' + r.rounds + ' ' + plural(r.rounds, 'проход', 'прохода', 'проходов') : ''));
+        }
+        if (r.left) parts.push('осталось ' + r.left);
         if (r.resized.length) parts.push('у ' + r.resized.length + ' ' + plural(r.resized.length, 'слоя', 'слоёв', 'слоёв') + ' изменился размер');
         if (r.failed.length) parts.push('не смог ' + r.failed.length);
         figma.notify(parts.length ? parts.join(', ') : 'Нечего исправлять');
