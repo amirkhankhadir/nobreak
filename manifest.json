@@ -1,5 +1,6 @@
 {
   "name": "Nobreak",
+  "id": "1668928175706251690",
   "api": "1.0.0",
   "main": "code.js",
   "editorType": ["figma"],
